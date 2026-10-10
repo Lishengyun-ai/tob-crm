@@ -56,6 +56,8 @@
   <div class="modal-backdrop" id="semanticModal"><div class="modal"><h2>新建语义资产</h2><div class="form-grid"><div class="field"><label>语义分类</label><select id="sCategory"><option>实体</option><option>关系与图谱</option><option>术语与别名</option><option>业务动作</option><option>业务事件</option><option>业务规则</option><option>流程与 SOP</option><option>指标</option><option>维度</option><option>目标与阈值</option><option>分析模型</option><option>归因因果</option><option>业务策略</option></select></div><div class="field"><label>资产类型</label><input id="sType" placeholder="例如：行业指标" /></div><div class="field full"><label>资产名称</label><input id="sName" placeholder="例如：客户年度出货目标" /></div><div class="field full"><label>业务定义</label><input id="sDesc" placeholder="描述它代表什么业务事实或规则" /></div></div><div class="modal-actions"><button class="secondary" id="closeSemanticModal">取消</button><button class="primary" id="saveSemantic">保存到数据库</button></div></div></div>
   <div class="modal-backdrop" id="stageModal"><div class="modal"><h2 id="stageModalTitle">转换客户开发阶段</h2><p id="stageModalHint" class="subtle"></p><div id="stageFields" class="form-grid"></div><div class="modal-actions"><button class="secondary" onclick="closeStageModal()">取消</button><button class="primary" onclick="submitStage()">校验并转换</button></div></div></div>
   <script>
+    const API_BASE=window.CRM_API_BASE||'';
+    const nativeFetch=window.fetch.bind(window);window.fetch=(url,options)=>nativeFetch(typeof url==='string'&&url.startsWith('/api/')?API_BASE+url:url,options);
     let opps=[], current=null, activeStage='全部';
     const money=(n)=>`¥ ${Number(n||0).toLocaleString('zh-CN')}`;
     const toast=(msg)=>{const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200)};

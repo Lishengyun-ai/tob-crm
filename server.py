@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -300,8 +301,9 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
-    server = ThreadingHTTPServer(("127.0.0.1", 8765), Handler)
-    print("CRM backend running at http://127.0.0.1:8765")
+    port = int(os.environ.get("PORT", "8765"))
+    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    print(f"CRM backend running on port {port}")
     print(f"SQLite database: {DB_PATH}")
     try:
         server.serve_forever()
