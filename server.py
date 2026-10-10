@@ -299,12 +299,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+
 if __name__ == "__main__":
     init_db()
-    port = int(os.environ.get("PORT", "8765"))
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+
+    import os
+    port = int(os.environ.get("PORT", 8765))
+
+    server = ThreadingHTTPServer(
+        ("0.0.0.0", port),
+        Handler
+    )
+
     print(f"CRM backend running on port {port}")
-    print(f"SQLite database: {DB_PATH}")
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
