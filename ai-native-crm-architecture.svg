@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f6f9fc"/>
+      <stop offset="1" stop-color="#eef4f8"/>
+    </linearGradient>
+    <linearGradient id="agent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1976a8"/>
+      <stop offset="1" stop-color="#0f4b77"/>
+    </linearGradient>
+    <linearGradient id="semantic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#278e82"/>
+      <stop offset="1" stop-color="#17695f"/>
+    </linearGradient>
+    <linearGradient id="ontology" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#243f69"/>
+      <stop offset="1" stop-color="#172b4d"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#102a43" flood-opacity="0.15"/>
+    </filter>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 Z" fill="#6d8294"/>
+    </marker>
+    <style>
+      .title{font-family:Arial,'Microsoft YaHei',sans-serif;font-weight:700;fill:#123b63}
+      .body{font-family:Arial,'Microsoft YaHei',sans-serif;fill:#29465d}
+      .small{font-size:14px}.mid{font-size:17px}.label{font-size:20px;font-weight:700}
+      .white{fill:#fff}.muted{fill:#6b7d8e}.line{stroke:#b7c8d5;stroke-width:1.5}
+    </style>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <text x="50" y="54" class="title" font-size="29">AI 原生 CRM 分层架构</text>
+  <text x="50" y="82" class="body" font-size="16">保留客户 / 项目 / 伙伴三维本体，以六项语义能力为统一口径，向上驱动 Agent，向下连接数据、事件、审批与业务闭环</text>
+  <rect x="50" y="105" width="1500" height="42" rx="6" fill="#fff" stroke="#d3a15b"/>
+  <text x="72" y="132" class="body" font-size="16" font-weight="700">设计主线：事实进入数据层 → 事件触发业务行为 → 语义层解释业务 → Agent 编排决策与执行 → 审批治理 → 结果回写形成闭环</text>
+
+  <!-- left rail -->
+  <rect x="50" y="173" width="146" height="590" rx="7" fill="#6c8194"/>
+  <text x="123" y="205" class="white" text-anchor="middle" font-size="17" font-weight="700">体验与治理</text>
+  <text x="123" y="230" class="white" text-anchor="middle" font-size="13">贯穿全链路</text>
+  <g class="body small" text-anchor="middle">
+    <text x="123" y="275">多端工作台</text><text x="123" y="300">权限与审计</text>
+    <text x="123" y="325">可解释性</text><text x="123" y="350">人机协同</text>
+    <text x="123" y="375">反馈学习</text><text x="123" y="400">版本管理</text>
+  </g>
+  <path d="M123 440 L123 705" stroke="#fff" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="123" y="738" class="white" text-anchor="middle" font-size="12">可信、可控、可回放</text>
+
+  <!-- top channels -->
+  <rect x="220" y="173" width="1330" height="62" rx="7" fill="#fff" stroke="#cedbe5" filter="url(#shadow)"/>
+  <text x="244" y="198" class="body" font-size="15" font-weight="700">业务触点与交互入口</text>
+  <g class="body small">
+    <rect x="410" y="186" width="190" height="31" rx="5" fill="#f5f8fb" stroke="#c7d7e3"/><text x="505" y="206" text-anchor="middle">销售工作台</text>
+    <rect x="615" y="186" width="190" height="31" rx="5" fill="#f5f8fb" stroke="#c7d7e3"/><text x="710" y="206" text-anchor="middle">伙伴门户</text>
+    <rect x="820" y="186" width="190" height="31" rx="5" fill="#f5f8fb" stroke="#c7d7e3"/><text x="915" y="206" text-anchor="middle">项目驾驶舱</text>
+    <rect x="1025" y="186" width="190" height="31" rx="5" fill="#f5f8fb" stroke="#c7d7e3"/><text x="1120" y="206" text-anchor="middle">管理分析</text>
+    <rect x="1230" y="186" width="290" height="31" rx="5" fill="#f5f8fb" stroke="#c7d7e3"/><text x="1375" y="206" text-anchor="middle">自然语言 / API / 消息入口</text>
+  </g>
+
+  <!-- agent layer -->
+  <rect x="220" y="252" width="1330" height="180" rx="8" fill="#eaf3f8" stroke="#b7cfdf" filter="url(#shadow)"/>
+  <rect x="220" y="252" width="185" height="180" rx="8" fill="url(#agent)"/>
+  <text x="312" y="292" class="white" text-anchor="middle" font-size="21" font-weight="700">Agent 编排层</text>
+  <text x="312" y="319" class="white" text-anchor="middle" font-size="14">Planner · Router · Executor</text>
+  <text x="246" y="356" class="white small">• 任务拆解与多 Agent 协作</text>
+  <text x="246" y="381" class="white small">• 工具调用与记忆管理</text>
+  <text x="246" y="406" class="white small">• 风险分级与升级人工</text>
+  <g class="body">
+    <rect x="430" y="274" width="250" height="137" rx="6" fill="#fff" stroke="#bfd2df"/>
+    <text x="452" y="300" class="label" font-size="17">客户开发 Agent</text>
+    <text x="452" y="326" class="small">客户洞察 · 线索评分</text><text x="452" y="349" class="small">拜访准备 · 跟进生成</text><text x="452" y="372" class="small">下一最佳行动</text>
+    <rect x="700" y="274" width="250" height="137" rx="6" fill="#fff" stroke="#bfd2df"/>
+    <text x="722" y="300" class="label" font-size="17">伙伴协同 Agent</text>
+    <text x="722" y="326" class="small">伙伴画像 · 能力匹配</text><text x="722" y="349" class="small">联合商机 · 激励建议</text><text x="722" y="372" class="small">冲突识别 · 任务派发</text>
+    <rect x="970" y="274" width="250" height="137" rx="6" fill="#fff" stroke="#bfd2df"/>
+    <text x="992" y="300" class="label" font-size="17">项目经营 Agent</text>
+    <text x="992" y="326" class="small">项目风险 · 资源调度</text><text x="992" y="349" class="small">进度偏差 · 经营预测</text><text x="992" y="372" class="small">材料 / 方案推荐</text>
+    <rect x="1240" y="274" width="285" height="137" rx="6" fill="#fff" stroke="#bfd2df"/>
+    <text x="1262" y="300" class="label" font-size="17">合同与履约 Agent</text>
+    <text x="1262" y="326" class="small">条款解析 · 审批路由</text><text x="1262" y="349" class="small">交付承诺 · 回款预警</text><text x="1262" y="372" class="small">签后风险闭环</text>
+  </g>
+
+  <!-- behavior/event strip -->
+  <rect x="220" y="450" width="1330" height="72" rx="7" fill="#fff7e9" stroke="#e7b56c"/>
+  <text x="244" y="479" class="body" font-size="16" font-weight="700">业务行为与事件驱动</text>
+  <text x="244" y="501" class="body small">事件总线：客户变化 / 项目里程碑 / 伙伴动作 / 合同状态 / 数据质量异常 → 规则判断 → 行为生成 → Agent 执行</text>
+  <g class="body small">
+    <rect x="910" y="463" width="130" height="37" rx="5" fill="#fff" stroke="#dc9d44"/><text x="975" y="487" text-anchor="middle">事件总线</text>
+    <rect x="1055" y="463" width="130" height="37" rx="5" fill="#fff" stroke="#dc9d44"/><text x="1120" y="487" text-anchor="middle">规则引擎</text>
+    <rect x="1200" y="463" width="130" height="37" rx="5" fill="#fff" stroke="#dc9d44"/><text x="1265" y="487" text-anchor="middle">行为编排</text>
+    <rect x="1345" y="463" width="180" height="37" rx="5" fill="#fff" stroke="#dc9d44"/><text x="1435" y="487" text-anchor="middle">结果回写 / 反馈</text>
+  </g>
+
+  <!-- semantic layer -->
+  <rect x="220" y="540" width="1330" height="145" rx="8" fill="#e9f5f1" stroke="#a8d2c8" filter="url(#shadow)"/>
+  <rect x="220" y="540" width="185" height="145" rx="8" fill="url(#semantic)"/>
+  <text x="312" y="583" class="white" text-anchor="middle" font-size="21" font-weight="700">语义层</text>
+  <text x="312" y="610" class="white" text-anchor="middle" font-size="14">统一口径 · 可解释推理</text>
+  <text x="246" y="645" class="white small">面向人：说同一种业务语言</text>
+  <text x="246" y="668" class="white small">面向 AI：提供可执行上下文</text>
+  <g class="body small">
+    <rect x="430" y="557" width="340" height="53" rx="5" fill="#fff" stroke="#a8d2c8"/><text x="450" y="580" font-weight="700">① 对象与字段语义</text><text x="450" y="599">客户、项目、伙伴及字段定义</text>
+    <rect x="790" y="557" width="340" height="53" rx="5" fill="#fff" stroke="#a8d2c8"/><text x="810" y="580" font-weight="700">② 关系语义</text><text x="810" y="599">一对多、多对多、影响链路</text>
+    <rect x="1150" y="557" width="375" height="53" rx="5" fill="#fff" stroke="#a8d2c8"/><text x="1170" y="580" font-weight="700">③ 指标与 KPI</text><text x="1170" y="599">预测达成、转化、回款、健康度</text>
+    <rect x="430" y="622" width="340" height="53" rx="5" fill="#fff" stroke="#a8d2c8"/><text x="450" y="645" font-weight="700">④ 业务术语 Glossary</text><text x="450" y="664">同词同义、同义可映射</text>
+    <rect x="790" y="622" width="340" height="53" rx="5" fill="#fff" stroke="#a8d2c8"/><text x="810" y="645" font-weight="700">⑤ 数据字典与口径</text><text x="810" y="664">来源、质量、时间、粒度、血缘</text>
+    <rect x="1150" y="622" width="375" height="53" rx="5" fill="#fff" stroke="#a8d2c8"/><text x="1170" y="645" font-weight="700">⑥ 权限与安全语义</text><text x="1170" y="664">行列级权限、敏感字段、脱敏</text>
+  </g>
+
+  <!-- ontology -->
+  <rect x="220" y="702" width="1330" height="118" rx="8" fill="#edf2f8" stroke="#b8c9dc" filter="url(#shadow)"/>
+  <rect x="220" y="702" width="185" height="118" rx="8" fill="url(#ontology)"/>
+  <text x="312" y="742" class="white" text-anchor="middle" font-size="21" font-weight="700">本体层</text>
+  <text x="312" y="770" class="white" text-anchor="middle" font-size="14">可推理的关系骨架</text>
+  <g class="body small">
+    <rect x="430" y="718" width="325" height="83" rx="5" fill="#fff" stroke="#9eb5cf"/>
+    <text x="452" y="742" font-weight="700" fill="#173f68">客户本体</text><text x="452" y="765">客户 · 联系人 · 组织 · 终端用户</text><text x="452" y="786">关系：拥有 / 影响 / 服务</text>
+    <rect x="775" y="718" width="325" height="83" rx="5" fill="#fff" stroke="#9eb5cf"/>
+    <text x="797" y="742" font-weight="700" fill="#173f68">项目本体</text><text x="797" y="765">项目 · 阶段 · 任务 · 里程碑</text><text x="797" y="786">关系：属于 / 依赖 / 阻塞</text>
+    <rect x="1120" y="718" width="405" height="83" rx="5" fill="#fff" stroke="#9eb5cf"/>
+    <text x="1142" y="742" font-weight="700" fill="#173f68">伙伴本体</text><text x="1142" y="765">施工商 · 材料商 · 经销商 · 生态伙伴</text><text x="1142" y="786">关系：协作 / 竞争 / 交付</text>
+  </g>
+
+  <!-- data base -->
+  <rect x="220" y="837" width="1330" height="38" rx="6" fill="#fff" stroke="#ccd9e2"/>
+  <text x="244" y="862" class="body small" font-weight="700">数据与系统底座：</text>
+  <text x="375" y="862" class="body small">CRM / ERP / 项目系统 / 伙伴系统 / 文档知识库 / 数据仓库 / API 与主数据</text>
+  <path d="M1545 210 L1545 810" stroke="#6c8194" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="1560" y="235" class="muted" font-size="12">决策与行动</text><text x="1560" y="855" class="muted" font-size="12">事实与记录</text>
+  <text x="800" y="895" class="muted" text-anchor="middle" font-size="12">版本：AI Native CRM Architecture · 2026-10-09</text>
+</svg>
