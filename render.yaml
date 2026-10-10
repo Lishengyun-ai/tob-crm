@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: tob-crm-api
+    name: tob-crm-agent
     runtime: python
     buildCommand: ""
     startCommand: "python server.py"
