@@ -34,6 +34,25 @@ SEED_AGENTS = [
     ("win-loss-review", "赢单/输单复盘 Agent", "商机诊断", "复盘赢单、输单和样板验证结果，将经验沉淀为可复用的策略与知识。", "赢单复盘,输单归因,最佳实践提炼,知识库沉淀", "采购金额增长归因,商机关系图谱,高潜工程客户增购策略"),
 ]
 
+SEED_SALES_ORGANIZATION = {
+    "code": "S300",
+    "name": "立邦工程材料（广州）有限公司",
+    "units": [
+        {
+            "code": "343",
+            "name": "山东商业与住宅客户业务部（工程）",
+            "office_code": "3068",
+            "office_name": "山东商业与住宅客户业务部（工程）",
+            "group_code": "343",
+            "group_name": "山东商业与住宅客户业务部（工程）",
+            "distribution_channel_code": "P9",
+            "distribution_channel_name": "P9",
+            "division_code": "14",
+            "division_name": "14",
+        }
+    ],
+}
+
 STAGE_DEFINITIONS = [
     {
         "code": "OPP_REPORTED",
@@ -209,6 +228,97 @@ def init_db():
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS sales_organizations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          code TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sales_organization_units (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sales_organization_id INTEGER NOT NULL,
+          code TEXT NOT NULL,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(sales_organization_id, code),
+          FOREIGN KEY(sales_organization_id) REFERENCES sales_organizations(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS distribution_channels (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          code TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS divisions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          code TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sales_offices (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sales_organization_unit_id INTEGER NOT NULL,
+          code TEXT NOT NULL,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(sales_organization_unit_id, code),
+          FOREIGN KEY(sales_organization_unit_id) REFERENCES sales_organization_units(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS sales_groups (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sales_office_id INTEGER NOT NULL,
+          code TEXT NOT NULL,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(sales_office_id, code),
+          FOREIGN KEY(sales_office_id) REFERENCES sales_offices(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS customer_organizations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_id INTEGER NOT NULL,
+          parent_id INTEGER,
+          code TEXT NOT NULL DEFAULT '',
+          name TEXT NOT NULL,
+          organization_type TEXT NOT NULL DEFAULT '集团总部',
+          level INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(customer_id, code),
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+          FOREIGN KEY(parent_id) REFERENCES customer_organizations(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS sales_assignments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sales_organization_id INTEGER NOT NULL,
+          sales_organization_unit_id INTEGER,
+          sales_office_id INTEGER,
+          sales_group_id INTEGER,
+          distribution_channel_id INTEGER,
+          division_id INTEGER,
+          assignment_type TEXT NOT NULL DEFAULT 'default',
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(sales_organization_id) REFERENCES sales_organizations(id),
+          FOREIGN KEY(sales_organization_unit_id) REFERENCES sales_organization_units(id),
+          FOREIGN KEY(sales_office_id) REFERENCES sales_offices(id),
+          FOREIGN KEY(sales_group_id) REFERENCES sales_groups(id),
+          FOREIGN KEY(distribution_channel_id) REFERENCES distribution_channels(id),
+          FOREIGN KEY(division_id) REFERENCES divisions(id)
+        );
         CREATE TABLE IF NOT EXISTS projects (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           customer_id INTEGER,
@@ -233,6 +343,72 @@ def init_db():
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS project_parties (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL,
+          customer_organization_id INTEGER,
+          person_id INTEGER,
+          party_type TEXT NOT NULL DEFAULT '其他',
+          party_name TEXT NOT NULL,
+          party_code TEXT NOT NULL DEFAULT '',
+          is_primary INTEGER NOT NULL DEFAULT 0,
+          source_type TEXT NOT NULL DEFAULT 'manual',
+          confidence REAL NOT NULL DEFAULT 1,
+          status TEXT NOT NULL DEFAULT 'active',
+          notes TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY(customer_organization_id) REFERENCES customer_organizations(id) ON DELETE SET NULL,
+          FOREIGN KEY(person_id) REFERENCES persons(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS persons (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          organization TEXT NOT NULL DEFAULT '',
+          title TEXT NOT NULL DEFAULT '',
+          person_type TEXT NOT NULL DEFAULT '关键人',
+          phone TEXT NOT NULL DEFAULT '',
+          email TEXT NOT NULL DEFAULT '',
+          notes TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS customer_persons (
+          customer_id INTEGER NOT NULL,
+          person_id INTEGER NOT NULL,
+          role TEXT NOT NULL DEFAULT '联系人',
+          is_primary INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(customer_id, person_id, role),
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+          FOREIGN KEY(person_id) REFERENCES persons(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS project_persons (
+          project_id INTEGER NOT NULL,
+          person_id INTEGER NOT NULL,
+          role TEXT NOT NULL DEFAULT '项目联系人',
+          is_primary INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY(project_id, person_id, role),
+          FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY(person_id) REFERENCES persons(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS opportunity_persons (
+          opportunity_id INTEGER NOT NULL,
+          person_id INTEGER NOT NULL,
+          role TEXT NOT NULL DEFAULT '商机联系人',
+          influence_level TEXT NOT NULL DEFAULT '未知',
+          relationship_status TEXT NOT NULL DEFAULT '待建立',
+          is_primary INTEGER NOT NULL DEFAULT 0,
+          notes TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(opportunity_id, person_id, role),
+          FOREIGN KEY(opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE,
+          FOREIGN KEY(person_id) REFERENCES persons(id) ON DELETE CASCADE
         );
         CREATE TABLE IF NOT EXISTS project_evidence (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -312,6 +488,39 @@ def init_db():
           created_at TEXT NOT NULL,
           FOREIGN KEY(opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS actions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          action_type TEXT NOT NULL DEFAULT 'follow_up',
+          status TEXT NOT NULL DEFAULT 'pending',
+          priority TEXT NOT NULL DEFAULT 'medium',
+          assignee TEXT NOT NULL DEFAULT '',
+          due_at TEXT,
+          opportunity_id INTEGER,
+          project_id INTEGER,
+          customer_id INTEGER,
+          customer_organization_id INTEGER,
+          person_id INTEGER,
+          stage_code TEXT,
+          stage_name TEXT,
+          source_type TEXT NOT NULL DEFAULT 'manual',
+          source_id TEXT NOT NULL DEFAULT '',
+          source_agent_id TEXT,
+          source_agent_run_id INTEGER,
+          created_by TEXT NOT NULL DEFAULT '李盛云',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          completed_at TEXT,
+          dedupe_key TEXT UNIQUE,
+          FOREIGN KEY(opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE,
+          FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL,
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE SET NULL,
+          FOREIGN KEY(customer_organization_id) REFERENCES customer_organizations(id) ON DELETE SET NULL,
+          FOREIGN KEY(person_id) REFERENCES persons(id) ON DELETE SET NULL,
+          FOREIGN KEY(source_agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+          FOREIGN KEY(source_agent_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
+        );
         """)
         columns = {row[1] for row in db.execute("PRAGMA table_info(opportunities)").fetchall()}
         if "source_category" not in columns:
@@ -322,6 +531,15 @@ def init_db():
             db.execute("ALTER TABLE opportunities ADD COLUMN project_id INTEGER")
         if "project_section_id" not in columns:
             db.execute("ALTER TABLE opportunities ADD COLUMN project_section_id INTEGER")
+        for table, column, definition in [
+            ("projects", "customer_organization_id", "INTEGER"),
+            ("persons", "customer_organization_id", "INTEGER"),
+            ("opportunities", "customer_organization_id", "INTEGER"),
+            ("opportunities", "sales_assignment_id", "INTEGER"),
+        ]:
+            columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+            if column not in columns:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         now = datetime.now(timezone.utc).isoformat()
         for definition in STAGE_DEFINITIONS:
             db.execute("""INSERT OR IGNORE INTO stage_definitions
@@ -343,8 +561,18 @@ def init_db():
                     db.execute("INSERT INTO semantic_fields (opportunity_id, field_name, field_type, field_value) VALUES (?, ?, ?, ?)", (oid, "业务标签", "semantic_tag", tag))
                 db.execute("INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)", (oid, "created", "商机对象已初始化", now))
         backfill_opportunity_relations(db, now)
+        seed_organization_ontology(db, now)
         db.execute("CREATE INDEX IF NOT EXISTS idx_opportunities_customer_id ON opportunities(customer_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_opportunities_project_id ON opportunities(project_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_opportunities_customer_org_id ON opportunities(customer_organization_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_opportunities_sales_assignment_id ON opportunities(sales_assignment_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_projects_customer_org_id ON projects(customer_organization_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_persons_customer_org_id ON persons(customer_organization_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_project_parties_project_id ON project_parties(project_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_project_parties_org_id ON project_parties(customer_organization_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_actions_opportunity_id ON actions(opportunity_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_actions_assignee ON actions(assignee)")
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_opportunities_project_section_id ON opportunities(project_section_id) WHERE project_section_id IS NOT NULL")
         agent_count = db.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
         if agent_count == 0:
@@ -352,6 +580,138 @@ def init_db():
                 db.execute("INSERT INTO agents (id, name, scene, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", (agent_id, name, scene, description, now, now))
                 for skill in skills.split(','):
                     db.execute("INSERT INTO agent_skills (agent_id, name, description, linked_assets) VALUES (?, ?, ?, ?)", (agent_id, skill, f"{skill}：读取客户、商机与涂料行业语义后生成可解释结果。", assets))
+        seed_initial_actions(db, now)
+
+def seed_organization_ontology(db, now):
+    """初始化我方销售组织，并为现有客户建立集团根节点。"""
+    sales = SEED_SALES_ORGANIZATION
+    sales_org = db.execute("SELECT * FROM sales_organizations WHERE code = ?", (sales["code"],)).fetchone()
+    if sales_org:
+        sales_org_id = sales_org["id"]
+    else:
+        cur = db.execute(
+            "INSERT INTO sales_organizations (code, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (sales["code"], sales["name"], now, now),
+        )
+        sales_org_id = cur.lastrowid
+
+    default_assignment_id = None
+    for unit in sales["units"]:
+        row = db.execute(
+            "SELECT * FROM sales_organization_units WHERE sales_organization_id = ? AND code = ?",
+            (sales_org_id, unit["code"]),
+        ).fetchone()
+        if row:
+            unit_id = row["id"]
+        else:
+            cur = db.execute(
+                """INSERT INTO sales_organization_units
+                   (sales_organization_id, code, name, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (sales_org_id, unit["code"], unit["name"], now, now),
+            )
+            unit_id = cur.lastrowid
+        channel = db.execute(
+            "SELECT * FROM distribution_channels WHERE code = ?", (unit["distribution_channel_code"],)
+        ).fetchone()
+        if channel:
+            channel_id = channel["id"]
+        else:
+            cur = db.execute(
+                "INSERT INTO distribution_channels (code, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (unit["distribution_channel_code"], unit["distribution_channel_name"], now, now),
+            )
+            channel_id = cur.lastrowid
+        division = db.execute("SELECT * FROM divisions WHERE code = ?", (unit["division_code"],)).fetchone()
+        if division:
+            division_id = division["id"]
+        else:
+            cur = db.execute(
+                "INSERT INTO divisions (code, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (unit["division_code"], unit["division_name"], now, now),
+            )
+            division_id = cur.lastrowid
+        office = db.execute(
+            "SELECT * FROM sales_offices WHERE sales_organization_unit_id = ? AND code = ?",
+            (unit_id, unit["office_code"]),
+        ).fetchone()
+        if office:
+            office_id = office["id"]
+        else:
+            cur = db.execute(
+                """INSERT INTO sales_offices
+                   (sales_organization_unit_id, code, name, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (unit_id, unit["office_code"], unit["office_name"], now, now),
+            )
+            office_id = cur.lastrowid
+        group = db.execute(
+            "SELECT * FROM sales_groups WHERE sales_office_id = ? AND code = ?",
+            (office_id, unit["group_code"]),
+        ).fetchone()
+        if group:
+            group_id = group["id"]
+        else:
+            cur = db.execute(
+                """INSERT INTO sales_groups
+                   (sales_office_id, code, name, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (office_id, unit["group_code"], unit["group_name"], now, now),
+            )
+            group_id = cur.lastrowid
+        assignment = db.execute(
+            """SELECT * FROM sales_assignments
+               WHERE sales_organization_id = ? AND sales_organization_unit_id = ?
+                 AND sales_office_id = ? AND sales_group_id = ?
+                 AND distribution_channel_id = ? AND division_id = ?""",
+            (sales_org_id, unit_id, office_id, group_id, channel_id, division_id),
+        ).fetchone()
+        if assignment:
+            default_assignment_id = assignment["id"]
+        else:
+            cur = db.execute(
+                """INSERT INTO sales_assignments
+                   (sales_organization_id, sales_organization_unit_id, sales_office_id,
+                    sales_group_id, distribution_channel_id, division_id,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (sales_org_id, unit_id, office_id, group_id, channel_id, division_id, now, now),
+            )
+            default_assignment_id = cur.lastrowid
+
+    for customer in db.execute("SELECT * FROM customers ORDER BY id").fetchall():
+        root = db.execute(
+            """SELECT * FROM customer_organizations
+               WHERE customer_id = ? AND parent_id IS NULL ORDER BY id LIMIT 1""",
+            (customer["id"],),
+        ).fetchone()
+        if not root:
+            db.execute(
+                """INSERT INTO customer_organizations
+                   (customer_id, code, name, organization_type, level, created_at, updated_at)
+                   VALUES (?, ?, ?, '集团总部', 0, ?, ?)""",
+                (customer["id"], f"CUST-{customer['id']}", customer["name"], now, now),
+            )
+            root = db.execute(
+                """SELECT * FROM customer_organizations
+                   WHERE customer_id = ? AND parent_id IS NULL ORDER BY id DESC LIMIT 1""",
+                (customer["id"],),
+            ).fetchone()
+        db.execute(
+            "UPDATE projects SET customer_organization_id = COALESCE(customer_organization_id, ?) WHERE customer_id = ?",
+            (root["id"], customer["id"]),
+        )
+        db.execute(
+            "UPDATE persons SET customer_organization_id = COALESCE(customer_organization_id, ?) WHERE id IN (SELECT person_id FROM customer_persons WHERE customer_id = ?)",
+            (root["id"], customer["id"]),
+        )
+        db.execute(
+            """UPDATE opportunities
+               SET customer_organization_id = COALESCE(customer_organization_id, ?),
+                   sales_assignment_id = COALESCE(sales_assignment_id, ?)
+               WHERE customer_id = ?""",
+            (root["id"], default_assignment_id, customer["id"]),
+        )
 
 def backfill_opportunity_relations(db, now):
     """将旧版名称关联迁移为 Customer -> Project -> ProjectSection 外键关系。"""
@@ -389,8 +749,14 @@ def backfill_opportunity_relations(db, now):
             ).fetchone()
         if not section:
             section = db.execute(
-                "SELECT * FROM project_sections WHERE project_id = ? ORDER BY id LIMIT 1",
-                (project_id,),
+                """SELECT ps.* FROM project_sections ps
+                   WHERE ps.project_id = ?
+                     AND NOT EXISTS (
+                       SELECT 1 FROM opportunities o
+                       WHERE o.project_section_id = ps.id AND o.id <> ?
+                     )
+                   ORDER BY ps.id LIMIT 1""",
+                (project_id, row["id"]),
             ).fetchone()
         if section:
             section_id = section["id"]
@@ -423,7 +789,333 @@ def attach_relationships(db, item):
     item["customerObject"] = dict(customer) if customer else None
     item["projectObject"] = dict(project) if project else None
     item["projectSectionObject"] = dict(section) if section else None
+    customer_org = db.execute(
+        """SELECT id, customer_id, parent_id, code, name, organization_type, level, status
+           FROM customer_organizations WHERE id = ?""",
+        (item.get("customer_organization_id"),),
+    ).fetchone() if item.get("customer_organization_id") else None
+    item["customerOrganizationId"] = item.get("customer_organization_id")
+    item["customerOrganization"] = dict(customer_org) if customer_org else None
+    assignment = db.execute(
+        """SELECT sa.id, so.code AS sales_organization_code, so.name AS sales_organization_name,
+                  sou.code AS unit_code, sou.name AS unit_name,
+                  sof.code AS office_code, sof.name AS office_name,
+                  sg.code AS group_code, sg.name AS group_name,
+                  dc.code AS channel_code, dc.name AS channel_name,
+                  d.code AS division_code, d.name AS division_name
+           FROM sales_assignments sa
+           JOIN sales_organizations so ON so.id = sa.sales_organization_id
+           LEFT JOIN sales_organization_units sou ON sou.id = sa.sales_organization_unit_id
+           LEFT JOIN sales_offices sof ON sof.id = sa.sales_office_id
+           LEFT JOIN sales_groups sg ON sg.id = sa.sales_group_id
+           LEFT JOIN distribution_channels dc ON dc.id = sa.distribution_channel_id
+           LEFT JOIN divisions d ON d.id = sa.division_id
+           WHERE sa.id = ?""",
+        (item.get("sales_assignment_id"),),
+    ).fetchone() if item.get("sales_assignment_id") else None
+    item["salesAssignmentId"] = item.get("sales_assignment_id")
+    item["salesAssignment"] = dict(assignment) if assignment else None
     return item
+
+def get_opportunity_people(db, opportunity_id):
+    rows = db.execute(
+        """SELECT op.role, op.influence_level, op.relationship_status, op.is_primary,
+                  op.notes AS relationship_notes, op.created_at AS linked_at,
+                  p.id, p.name, p.organization, p.title, p.person_type,
+                  p.customer_organization_id,
+                  p.phone, p.email, p.notes, p.status
+           FROM opportunity_persons op
+           JOIN persons p ON p.id = op.person_id
+           WHERE op.opportunity_id = ?
+           ORDER BY op.is_primary DESC, op.updated_at DESC, p.id""",
+        (opportunity_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+def get_customer_people(db, customer_id):
+    rows = db.execute(
+        """SELECT cp.role, cp.is_primary, cp.created_at AS linked_at,
+                  p.id, p.name, p.organization, p.title, p.person_type,
+                  p.customer_organization_id,
+                  p.phone, p.email, p.notes, p.status
+           FROM customer_persons cp
+           JOIN persons p ON p.id = cp.person_id
+           WHERE cp.customer_id = ?
+           ORDER BY cp.is_primary DESC, p.id""",
+        (customer_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+def get_project_parties(db, project_id):
+    rows = db.execute(
+        """SELECT pp.*, co.name AS customer_organization_name,
+                  p.name AS person_name, p.title AS person_title
+           FROM project_parties pp
+           LEFT JOIN customer_organizations co ON co.id = pp.customer_organization_id
+           LEFT JOIN persons p ON p.id = pp.person_id
+           WHERE pp.project_id = ?
+           ORDER BY pp.is_primary DESC, pp.party_type, pp.id""",
+        (project_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+def serialize_action(row):
+    item = dict(row)
+    item["isCompleted"] = item.get("status") == "completed"
+    item["isOverdue"] = bool(
+        item.get("due_at")
+        and item.get("status") not in {"completed", "cancelled"}
+        and item["due_at"] < datetime.now(timezone.utc).isoformat()[:10]
+    )
+    return item
+
+def get_actions(db, opportunity_id=None, project_id=None, status=None):
+    clauses = []
+    values = []
+    if opportunity_id is not None:
+        clauses.append("a.opportunity_id = ?")
+        values.append(opportunity_id)
+    if project_id is not None:
+        clauses.append("a.project_id = ?")
+        values.append(project_id)
+    if status:
+        clauses.append("a.status = ?")
+        values.append(status)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = db.execute(
+        f"""SELECT a.*, ag.name AS source_agent_name
+            FROM actions a
+            LEFT JOIN agents ag ON ag.id = a.source_agent_id
+            {where}
+            ORDER BY CASE a.status
+                       WHEN 'in_progress' THEN 1
+                       WHEN 'pending' THEN 2
+                       WHEN 'overdue' THEN 3
+                       WHEN 'completed' THEN 4
+                       ELSE 5
+                     END,
+                     CASE WHEN a.due_at IS NULL THEN 1 ELSE 0 END,
+                     a.due_at, a.updated_at DESC, a.id DESC""",
+        tuple(values),
+    ).fetchall()
+    return [serialize_action(row) for row in rows]
+
+def create_action_record(
+    db,
+    *,
+    title,
+    description="",
+    action_type="follow_up",
+    status="pending",
+    priority="medium",
+    assignee="",
+    due_at=None,
+    opportunity_id=None,
+    project_id=None,
+    customer_id=None,
+    customer_organization_id=None,
+    person_id=None,
+    stage_code=None,
+    stage_name=None,
+    source_type="manual",
+    source_id="",
+    source_agent_id=None,
+    source_agent_run_id=None,
+    created_by="李盛云",
+    dedupe_key=None,
+    now=None,
+):
+    now = now or datetime.now(timezone.utc).isoformat()
+    opportunity = None
+    if opportunity_id is not None:
+        opportunity = db.execute(
+            "SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)
+        ).fetchone()
+        if not opportunity:
+            raise ValueError("opportunity not found")
+        project_id = project_id or opportunity["project_id"]
+        customer_id = customer_id or opportunity["customer_id"]
+        customer_organization_id = customer_organization_id or opportunity["customer_organization_id"]
+        assignee = assignee or opportunity["owner"]
+    if project_id is not None and not db.execute(
+        "SELECT 1 FROM projects WHERE id = ?", (project_id,)
+    ).fetchone():
+        raise ValueError("project not found")
+    if customer_id is not None and not db.execute(
+        "SELECT 1 FROM customers WHERE id = ?", (customer_id,)
+    ).fetchone():
+        raise ValueError("customer not found")
+    if customer_organization_id is not None and not db.execute(
+        "SELECT 1 FROM customer_organizations WHERE id = ?", (customer_organization_id,)
+    ).fetchone():
+        raise ValueError("customer organization not found")
+    if source_agent_id is not None and not db.execute(
+        "SELECT 1 FROM agents WHERE id = ?", (source_agent_id,)
+    ).fetchone():
+        raise ValueError("agent not found")
+    completed_at = now if status == "completed" else None
+    db.execute(
+        """INSERT OR IGNORE INTO actions
+           (title, description, action_type, status, priority, assignee, due_at,
+            opportunity_id, project_id, customer_id, customer_organization_id, person_id,
+            stage_code, stage_name, source_type, source_id, source_agent_id,
+            source_agent_run_id, created_by, created_at, updated_at, completed_at, dedupe_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            str(title).strip() or "未命名行动",
+            str(description).strip(),
+            str(action_type).strip() or "follow_up",
+            str(status).strip() or "pending",
+            str(priority).strip() or "medium",
+            str(assignee).strip(),
+            str(due_at).strip() if due_at else None,
+            opportunity_id,
+            project_id,
+            customer_id,
+            customer_organization_id,
+            person_id,
+            stage_code,
+            stage_name,
+            str(source_type).strip() or "manual",
+            str(source_id).strip(),
+            source_agent_id,
+            source_agent_run_id,
+            str(created_by).strip() or "李盛云",
+            now,
+            now,
+            completed_at,
+            dedupe_key,
+        ),
+    )
+    if dedupe_key:
+        row = db.execute("SELECT * FROM actions WHERE dedupe_key = ?", (dedupe_key,)).fetchone()
+    else:
+        row = db.execute("SELECT * FROM actions WHERE rowid = last_insert_rowid()").fetchone()
+    return serialize_action(row) if row else None
+
+def create_stage_actions(db, opportunity, current_stage, source_type, source_id, now):
+    next_code = current_stage.get("nextCode")
+    if not next_code:
+        return []
+    next_stage = stage_definition(db, next_code)
+    if not next_stage:
+        return []
+    required = next_stage.get("required") or []
+    actions = []
+    fields = required or [{"key": "stageGate", "label": f"{next_stage['name']}阶段准入条件"}]
+    for field in fields:
+        is_gate = field["key"] == "stageGate"
+        actions.append(create_action_record(
+            db,
+            title=f"{'完成' if is_gate else '填写'}{next_stage['name']}：{field['label']}",
+            description=(
+                f"推进商机到“{next_stage['name']}”前，需要完成阶段准入条件。"
+                if is_gate else
+                f"为推进商机到“{next_stage['name']}”，补齐字段“{field['label']}”。"
+            ),
+            action_type="stage_gate" if is_gate else "stage_field",
+            priority="high",
+            assignee=opportunity["owner"],
+            opportunity_id=opportunity["id"],
+            stage_code=next_stage["code"],
+            stage_name=next_stage["name"],
+            source_type=source_type,
+            source_id=str(source_id),
+            created_by=opportunity["owner"],
+            dedupe_key=f"{source_type}:{source_id}:{opportunity['id']}:{next_stage['code']}:{field['key']}",
+            now=now,
+        ))
+    return [item for item in actions if item]
+
+def complete_stage_actions(db, opportunity_id, stage_code, now):
+    db.execute(
+        """UPDATE actions
+           SET status = 'completed', completed_at = ?, updated_at = ?
+           WHERE opportunity_id = ? AND stage_code = ?
+             AND action_type IN ('stage_gate', 'stage_field')
+             AND status IN ('pending', 'in_progress')""",
+        (now, now, opportunity_id, stage_code),
+    )
+
+def seed_initial_actions(db, now):
+    for opportunity in db.execute("SELECT * FROM opportunities ORDER BY id").fetchall():
+        current_stage = stage_definition(db, opportunity["stage"])
+        if current_stage:
+            create_stage_actions(
+                db,
+                opportunity,
+                current_stage,
+                "stage_plan",
+                "bootstrap",
+                now,
+            )
+
+def get_sales_organization_ontology(db):
+    organizations = []
+    for org in db.execute("SELECT * FROM sales_organizations ORDER BY code").fetchall():
+        item = dict(org)
+        item["units"] = []
+        for unit in db.execute(
+            "SELECT * FROM sales_organization_units WHERE sales_organization_id = ? ORDER BY code",
+            (org["id"],),
+        ).fetchall():
+            unit_item = dict(unit)
+            unit_item["offices"] = []
+            for office in db.execute(
+                "SELECT * FROM sales_offices WHERE sales_organization_unit_id = ? ORDER BY code",
+                (unit["id"],),
+            ).fetchall():
+                office_item = dict(office)
+                office_item["groups"] = [
+                    dict(row) for row in db.execute(
+                        "SELECT * FROM sales_groups WHERE sales_office_id = ? ORDER BY code",
+                        (office["id"],),
+                    ).fetchall()
+                ]
+                unit_item["offices"].append(office_item)
+            item["units"].append(unit_item)
+        organizations.append(item)
+    return organizations
+
+def get_customer_organization_tree(db, customer_id):
+    rows = [
+        dict(row) for row in db.execute(
+            """SELECT co.*, c.name AS customer_name
+               FROM customer_organizations co
+               JOIN customers c ON c.id = co.customer_id
+               WHERE co.customer_id = ?
+               ORDER BY co.level, co.id""",
+            (customer_id,),
+        ).fetchall()
+    ]
+    by_id = {row["id"]: {**row, "children": []} for row in rows}
+    roots = []
+    for row in by_id.values():
+        if row["parent_id"] and row["parent_id"] in by_id:
+            by_id[row["parent_id"]]["children"].append(row)
+        else:
+            roots.append(row)
+    return roots
+
+def get_customer_organization_node(db, organization_id):
+    row = db.execute(
+        """SELECT co.*, c.name AS customer_name
+           FROM customer_organizations co
+           JOIN customers c ON c.id = co.customer_id
+           WHERE co.id = ?""",
+        (organization_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+def get_customer_organization_options(db, customer_id):
+    rows = db.execute(
+        """SELECT id, parent_id, code, name, organization_type, level, status
+           FROM customer_organizations
+           WHERE customer_id = ?
+           ORDER BY level, name, id""",
+        (customer_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 def serialize(row):
     return {
@@ -480,6 +1172,7 @@ def get_opportunity(db, oid):
     item = dict(row)
     item["tags"] = [dict(x) for x in db.execute("SELECT * FROM semantic_fields WHERE opportunity_id = ?", (oid,)).fetchall()]
     item = decorate_opportunity(db, item)
+    item["keyPersons"] = get_opportunity_people(db, oid)
     history = db.execute("""SELECT * FROM opportunity_stage_transitions
         WHERE opportunity_id = ? ORDER BY created_at ASC, id ASC""", (oid,)).fetchall()
     item["stageHistory"] = []
@@ -531,6 +1224,7 @@ def get_opportunity(db, oid):
             "createdAt": record["created_at"] if record else None,
         })
     item["stageTasks"] = stage_tasks
+    item["actions"] = get_actions(db, opportunity_id=oid)
     return item
 
 def clean_candidate_text(value, fallback):
@@ -610,7 +1304,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
@@ -632,6 +1326,98 @@ class Handler(BaseHTTPRequestHandler):
                     item.pop("next_code", None)
                     result.append(item)
                 return self.send_json(result)
+            if path == "/api/ontology/sales-organizations":
+                return self.send_json(get_sales_organization_ontology(db))
+            if path == "/api/ontology/customer-organizations":
+                query = urlparse(self.path).query
+                params = dict(item.split("=", 1) for item in query.split("&") if "=" in item)
+                customer_id = params.get("customerId")
+                if customer_id:
+                    try:
+                        customer_id = int(customer_id)
+                    except ValueError:
+                        return self.send_json({"error": "invalid customer id"}, 400)
+                    if not db.execute("SELECT 1 FROM customers WHERE id = ?", (customer_id,)).fetchone():
+                        return self.send_json({"error": "customer not found"}, 404)
+                    return self.send_json(get_customer_organization_tree(db, customer_id))
+                rows = db.execute(
+                    """SELECT co.*, c.name AS customer_name
+                       FROM customer_organizations co
+                       JOIN customers c ON c.id = co.customer_id
+                       ORDER BY c.name, co.level, co.id"""
+                ).fetchall()
+                return self.send_json([dict(row) for row in rows])
+            if path == "/api/customers":
+                rows = db.execute(
+                    "SELECT id, name, customer_type, industry, status FROM customers ORDER BY name, id"
+                ).fetchall()
+                return self.send_json([dict(row) for row in rows])
+            if path == "/api/projects":
+                query = urlparse(self.path).query
+                params = dict(item.split("=", 1) for item in query.split("&") if "=" in item)
+                customer_id = params.get("customerId")
+                if customer_id:
+                    try:
+                        customer_id = int(customer_id)
+                    except ValueError:
+                        return self.send_json({"error": "invalid customer id"}, 400)
+                    rows = db.execute(
+                        """SELECT p.id, p.customer_id, p.customer_organization_id, p.name,
+                                  p.project_type, p.address, p.status,
+                                  co.name AS customer_organization_name
+                           FROM projects p
+                           LEFT JOIN customer_organizations co ON co.id = p.customer_organization_id
+                           WHERE p.customer_id = ?
+                           ORDER BY p.updated_at DESC, p.id DESC""",
+                        (customer_id,),
+                    ).fetchall()
+                else:
+                    rows = db.execute(
+                        """SELECT p.id, p.customer_id, p.customer_organization_id, p.name,
+                                  p.project_type, p.address, p.status,
+                                  co.name AS customer_organization_name
+                           FROM projects p
+                           LEFT JOIN customer_organizations co ON co.id = p.customer_organization_id
+                           ORDER BY p.updated_at DESC, p.id DESC"""
+                    ).fetchall()
+                return self.send_json([dict(row) for row in rows])
+            if path == "/api/actions":
+                query = urlparse(self.path).query
+                params = dict(item.split("=", 1) for item in query.split("&") if "=" in item)
+                try:
+                    opportunity_id = int(params["opportunityId"]) if params.get("opportunityId") else None
+                    project_id = int(params["projectId"]) if params.get("projectId") else None
+                except ValueError:
+                    return self.send_json({"error": "invalid action filter"}, 400)
+                return self.send_json(get_actions(db, opportunity_id, project_id, params.get("status")))
+            if path.startswith("/api/projects/") and path.endswith("/parties"):
+                parts = path.strip("/").split("/")
+                try:
+                    project_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid project id"}, 400)
+                if not db.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone():
+                    return self.send_json({"error": "project not found"}, 404)
+                return self.send_json(get_project_parties(db, project_id))
+            if path == "/api/ontology/sales-assignments":
+                rows = db.execute(
+                    """SELECT sa.*,
+                              so.code AS sales_organization_code, so.name AS sales_organization_name,
+                              sou.code AS unit_code, sou.name AS unit_name,
+                              sof.code AS office_code, sof.name AS office_name,
+                              sg.code AS group_code, sg.name AS group_name,
+                              dc.code AS channel_code, dc.name AS channel_name,
+                              d.code AS division_code, d.name AS division_name
+                       FROM sales_assignments sa
+                       JOIN sales_organizations so ON so.id = sa.sales_organization_id
+                       LEFT JOIN sales_organization_units sou ON sou.id = sa.sales_organization_unit_id
+                       LEFT JOIN sales_offices sof ON sof.id = sa.sales_office_id
+                       LEFT JOIN sales_groups sg ON sg.id = sa.sales_group_id
+                       LEFT JOIN distribution_channels dc ON dc.id = sa.distribution_channel_id
+                       LEFT JOIN divisions d ON d.id = sa.division_id
+                       ORDER BY sa.id"""
+                ).fetchall()
+                return self.send_json([dict(row) for row in rows])
             if path == "/api/opportunities":
                 rows = db.execute("SELECT * FROM opportunities ORDER BY updated_at DESC, id DESC").fetchall()
                 result = []
@@ -640,6 +1426,18 @@ class Handler(BaseHTTPRequestHandler):
                     item["tags"] = [x["field_value"] for x in db.execute("SELECT field_value FROM semantic_fields WHERE opportunity_id = ?", (row["id"],)).fetchall()]
                     result.append(decorate_opportunity(db, item))
                 return self.send_json(result)
+            if path == "/api/people":
+                rows = db.execute("SELECT * FROM persons ORDER BY updated_at DESC, id DESC").fetchall()
+                return self.send_json([dict(row) for row in rows])
+            if path.startswith("/api/customers/") and path.endswith("/people"):
+                parts = path.strip("/").split("/")
+                try:
+                    customer_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer id"}, 400)
+                if not db.execute("SELECT 1 FROM customers WHERE id = ?", (customer_id,)).fetchone():
+                    return self.send_json({"error": "customer not found"}, 404)
+                return self.send_json(get_customer_people(db, customer_id))
             if path.startswith("/api/opportunities/"):
                 parts = path.strip("/").split("/")
                 try:
@@ -649,10 +1447,18 @@ class Handler(BaseHTTPRequestHandler):
                 if len(parts) == 4 and parts[3] == "events":
                     events = db.execute("SELECT * FROM business_events WHERE opportunity_id = ? ORDER BY created_at DESC", (oid,)).fetchall()
                     return self.send_json([dict(x) for x in events])
+                if len(parts) == 4 and parts[3] == "actions":
+                    if not db.execute("SELECT 1 FROM opportunities WHERE id = ?", (oid,)).fetchone():
+                        return self.send_json({"error": "opportunity not found"}, 404)
+                    return self.send_json(get_actions(db, opportunity_id=oid))
                 if len(parts) == 4 and parts[3] == "stage-history":
                     history = db.execute("""SELECT * FROM opportunity_stage_transitions
                         WHERE opportunity_id = ? ORDER BY created_at DESC, id DESC""", (oid,)).fetchall()
                     return self.send_json([dict(x) for x in history])
+                if len(parts) == 4 and parts[3] == "people":
+                    if not db.execute("SELECT 1 FROM opportunities WHERE id = ?", (oid,)).fetchone():
+                        return self.send_json({"error": "opportunity not found"}, 404)
+                    return self.send_json(get_opportunity_people(db, oid))
                 item = get_opportunity(db, oid)
                 return self.send_json(item or {"error": "opportunity not found"}, 200 if item else 404)
             if path.startswith("/api/discovery/"):
@@ -693,11 +1499,423 @@ class Handler(BaseHTTPRequestHandler):
             return self.serve_file(OUTPUTS / "index.html", "text/html; charset=utf-8")
         return self.send_json({"error": "not found"}, 404)
 
+    def do_PUT(self):
+        path = urlparse(self.path).path
+        data = self.read_json()
+        now = datetime.now(timezone.utc).isoformat()
+        with connect() as db:
+            if path.startswith("/api/actions/"):
+                try:
+                    action_id = int(path.strip("/").split("/")[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid action id"}, 400)
+                action = db.execute("SELECT * FROM actions WHERE id = ?", (action_id,)).fetchone()
+                if not action:
+                    return self.send_json({"error": "action not found"}, 404)
+                status = str(data.get("status", action["status"])).strip() or action["status"]
+                if status not in {"pending", "in_progress", "completed", "cancelled"}:
+                    return self.send_json({"error": "invalid action status"}, 400)
+                title = str(data.get("title", action["title"])).strip()
+                if not title:
+                    return self.send_json({"error": "title is required"}, 400)
+                completed_at = now if status == "completed" else (
+                    action["completed_at"] if status == "completed" else None
+                )
+                db.execute(
+                    """UPDATE actions
+                       SET title = ?, description = ?, status = ?, priority = ?,
+                           assignee = ?, due_at = ?, updated_at = ?, completed_at = ?
+                       WHERE id = ?""",
+                    (
+                        title,
+                        str(data.get("description", action["description"])).strip(),
+                        status,
+                        str(data.get("priority", action["priority"])).strip() or "medium",
+                        str(data.get("assignee", action["assignee"])).strip(),
+                        str(data.get("dueAt", action["due_at"])).strip() if data.get("dueAt", action["due_at"]) else None,
+                        now,
+                        completed_at,
+                        action_id,
+                    ),
+                )
+                row = db.execute(
+                    """SELECT a.*, ag.name AS source_agent_name
+                       FROM actions a LEFT JOIN agents ag ON ag.id = a.source_agent_id
+                       WHERE a.id = ?""",
+                    (action_id,),
+                ).fetchone()
+                if action["opportunity_id"]:
+                    db.execute(
+                        "INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)",
+                        (action["opportunity_id"], "action_updated", f"行动任务“{title}”状态更新为 {status}", now),
+                    )
+                return self.send_json(serialize_action(row))
+            if path.startswith("/api/projects/") and "/parties/" in path:
+                parts = path.strip("/").split("/")
+                try:
+                    project_id = int(parts[2])
+                    party_id = int(parts[4])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid project party id"}, 400)
+                party = db.execute(
+                    "SELECT * FROM project_parties WHERE id = ? AND project_id = ?",
+                    (party_id, project_id),
+                ).fetchone()
+                if not party:
+                    return self.send_json({"error": "project party not found"}, 404)
+                party_name = str(data.get("partyName", party["party_name"])).strip()
+                party_type = str(data.get("partyType", party["party_type"])).strip()
+                if not party_name or not party_type:
+                    return self.send_json({"error": "partyName and partyType are required"}, 400)
+                db.execute(
+                    """UPDATE project_parties
+                       SET party_name = ?, party_type = ?, party_code = ?,
+                           is_primary = ?, notes = ?, updated_at = ?
+                       WHERE id = ? AND project_id = ?""",
+                    (
+                        party_name,
+                        party_type,
+                        str(data.get("partyCode", party["party_code"])).strip(),
+                        int(bool(data.get("isPrimary", party["is_primary"]))),
+                        str(data.get("notes", party["notes"])).strip(),
+                        now,
+                        party_id,
+                        project_id,
+                    ),
+                )
+                return self.send_json(get_project_parties(db, project_id))
+            if path.startswith("/api/ontology/customer-organizations/"):
+                try:
+                    organization_id = int(path.strip("/").split("/")[3])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid organization id"}, 400)
+                node = db.execute(
+                    "SELECT * FROM customer_organizations WHERE id = ?", (organization_id,)
+                ).fetchone()
+                if not node:
+                    return self.send_json({"error": "customer organization not found"}, 404)
+                name = str(data.get("name", node["name"])).strip()
+                organization_type = str(
+                    data.get("organizationType", node["organization_type"])
+                ).strip()
+                status = str(data.get("status", node["status"])).strip()
+                if not name:
+                    return self.send_json({"error": "name is required"}, 400)
+                if not organization_type:
+                    return self.send_json({"error": "organizationType is required"}, 400)
+                db.execute(
+                    """UPDATE customer_organizations
+                       SET name = ?, organization_type = ?, status = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (name, organization_type, status or "active", now, organization_id),
+                )
+                return self.send_json(get_customer_organization_node(db, organization_id))
+        return self.send_json({"error": "not found"}, 404)
+
+    def do_DELETE(self):
+        path = urlparse(self.path).path
+        with connect() as db:
+            if path.startswith("/api/projects/") and "/parties/" in path:
+                parts = path.strip("/").split("/")
+                try:
+                    project_id = int(parts[2])
+                    party_id = int(parts[4])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid project party id"}, 400)
+                cur = db.execute(
+                    "DELETE FROM project_parties WHERE id = ? AND project_id = ?",
+                    (party_id, project_id),
+                )
+                if not cur.rowcount:
+                    return self.send_json({"error": "project party not found"}, 404)
+                return self.send_json({"status": "deleted", "projectId": project_id, "partyId": party_id})
+        return self.send_json({"error": "not found"}, 404)
+
     def do_POST(self):
         path = urlparse(self.path).path
         data = self.read_json()
         now = datetime.now(timezone.utc).isoformat()
         with connect() as db:
+            if path == "/api/actions":
+                title = str(data.get("title", "")).strip()
+                if not title:
+                    return self.send_json({"error": "title is required"}, 400)
+                try:
+                    opportunity_id = int(data["opportunityId"]) if data.get("opportunityId") else None
+                    project_id = int(data["projectId"]) if data.get("projectId") else None
+                    customer_id = int(data["customerId"]) if data.get("customerId") else None
+                    customer_organization_id = (
+                        int(data["customerOrganizationId"])
+                        if data.get("customerOrganizationId") else None
+                    )
+                    person_id = int(data["personId"]) if data.get("personId") else None
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "invalid action relation id"}, 400)
+                try:
+                    action = create_action_record(
+                        db,
+                        title=title,
+                        description=data.get("description", ""),
+                        action_type=data.get("actionType", "follow_up"),
+                        status=data.get("status", "pending"),
+                        priority=data.get("priority", "medium"),
+                        assignee=data.get("assignee", ""),
+                        due_at=data.get("dueAt"),
+                        opportunity_id=opportunity_id,
+                        project_id=project_id,
+                        customer_id=customer_id,
+                        customer_organization_id=customer_organization_id,
+                        person_id=person_id,
+                        stage_code=data.get("stageCode"),
+                        stage_name=data.get("stageName"),
+                        source_type=data.get("sourceType", "manual"),
+                        source_id=data.get("sourceId", ""),
+                        created_by=data.get("createdBy", "李盛云"),
+                        now=now,
+                    )
+                except ValueError as error:
+                    return self.send_json({"error": str(error)}, 404)
+                if opportunity_id:
+                    db.execute(
+                        "INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)",
+                        (opportunity_id, "action_created", f"已创建行动任务“{title}”", now),
+                    )
+                return self.send_json(action, 201)
+            if path.startswith("/api/projects/") and path.endswith("/parties"):
+                parts = path.strip("/").split("/")
+                try:
+                    project_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid project id"}, 400)
+                project = db.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+                if not project:
+                    return self.send_json({"error": "project not found"}, 404)
+                party_name = str(data.get("partyName", "")).strip()
+                party_type = str(data.get("partyType", "其他")).strip() or "其他"
+                if not party_name:
+                    return self.send_json({"error": "partyName is required"}, 400)
+                organization_id = data.get("customerOrganizationId")
+                person_id = data.get("personId")
+                if organization_id:
+                    organization = db.execute(
+                        "SELECT * FROM customer_organizations WHERE id = ? AND customer_id = ?",
+                        (organization_id, project["customer_id"]),
+                    ).fetchone()
+                    if not organization:
+                        return self.send_json({"error": "organization does not belong to project customer"}, 409)
+                if person_id:
+                    person = db.execute("SELECT * FROM persons WHERE id = ?", (person_id,)).fetchone()
+                    linked = db.execute(
+                        "SELECT 1 FROM customer_persons WHERE person_id = ? AND customer_id = ?",
+                        (person_id, project["customer_id"]),
+                    ).fetchone()
+                    if not person or not linked:
+                        return self.send_json({"error": "person does not belong to project customer"}, 409)
+                cur = db.execute(
+                    """INSERT INTO project_parties
+                       (project_id, customer_organization_id, person_id, party_type, party_name,
+                        party_code, is_primary, source_type, confidence, notes, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        project_id,
+                        organization_id,
+                        person_id,
+                        party_type,
+                        party_name,
+                        str(data.get("partyCode", "")).strip(),
+                        int(bool(data.get("isPrimary"))),
+                        str(data.get("sourceType", "manual")).strip() or "manual",
+                        float(data.get("confidence", 1) or 1),
+                        str(data.get("notes", "")).strip(),
+                        now,
+                        now,
+                    ),
+                )
+                return self.send_json(get_project_parties(db, project_id), 201)
+            if path == "/api/ontology/customer-organizations":
+                try:
+                    customer_id = int(data.get("customerId"))
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "customerId is required"}, 400)
+                if not db.execute("SELECT 1 FROM customers WHERE id = ?", (customer_id,)).fetchone():
+                    return self.send_json({"error": "customer not found"}, 404)
+                parent_id = data.get("parentId")
+                parent = None
+                if parent_id:
+                    try:
+                        parent_id = int(parent_id)
+                    except (TypeError, ValueError):
+                        return self.send_json({"error": "invalid parentId"}, 400)
+                    parent = db.execute(
+                        "SELECT * FROM customer_organizations WHERE id = ? AND customer_id = ?",
+                        (parent_id, customer_id),
+                    ).fetchone()
+                    if not parent:
+                        return self.send_json({"error": "parent organization not found"}, 404)
+                name = str(data.get("name", "")).strip()
+                if not name:
+                    return self.send_json({"error": "name is required"}, 400)
+                code = str(data.get("code", "")).strip() or f"CUST-{customer_id}-ORG-{int(datetime.now().timestamp())}"
+                organization_type = str(data.get("organizationType", "项目公司")).strip() or "项目公司"
+                level = int(parent["level"]) + 1 if parent else 0
+                try:
+                    cur = db.execute(
+                        """INSERT INTO customer_organizations
+                           (customer_id, parent_id, code, name, organization_type, level, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (customer_id, parent_id, code, name, organization_type, level, now, now),
+                    )
+                except sqlite3.IntegrityError:
+                    return self.send_json({"error": "organization code already exists"}, 409)
+                return self.send_json(get_customer_organization_node(db, cur.lastrowid), 201)
+            if path.startswith("/api/projects/") and path.endswith("/customer-organization"):
+                try:
+                    project_id = int(path.strip("/").split("/")[2])
+                    organization_id = int(data.get("customerOrganizationId"))
+                except (TypeError, ValueError, IndexError):
+                    return self.send_json({"error": "projectId and customerOrganizationId are required"}, 400)
+                project = db.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+                organization = db.execute(
+                    "SELECT * FROM customer_organizations WHERE id = ?", (organization_id,)
+                ).fetchone()
+                if not project:
+                    return self.send_json({"error": "project not found"}, 404)
+                if not organization or organization["customer_id"] != project["customer_id"]:
+                    return self.send_json({"error": "organization does not belong to project customer"}, 409)
+                db.execute(
+                    "UPDATE projects SET customer_organization_id = ?, updated_at = ? WHERE id = ?",
+                    (organization_id, now, project_id),
+                )
+                db.execute(
+                    "UPDATE opportunities SET customer_organization_id = ?, updated_at = ? WHERE project_id = ?",
+                    (organization_id, now, project_id),
+                )
+                return self.send_json({"status": "bound", "projectId": project_id, "customerOrganizationId": organization_id})
+            if path.startswith("/api/people/") and path.endswith("/customer-organization"):
+                try:
+                    person_id = int(path.strip("/").split("/")[2])
+                    organization_id = int(data.get("customerOrganizationId"))
+                except (TypeError, ValueError, IndexError):
+                    return self.send_json({"error": "personId and customerOrganizationId are required"}, 400)
+                person = db.execute("SELECT * FROM persons WHERE id = ?", (person_id,)).fetchone()
+                organization = db.execute(
+                    "SELECT * FROM customer_organizations WHERE id = ?", (organization_id,)
+                ).fetchone()
+                if not person:
+                    return self.send_json({"error": "person not found"}, 404)
+                if not organization:
+                    return self.send_json({"error": "customer organization not found"}, 404)
+                linked = db.execute(
+                    "SELECT 1 FROM customer_persons WHERE person_id = ? AND customer_id = ?",
+                    (person_id, organization["customer_id"]),
+                ).fetchone()
+                if not linked:
+                    return self.send_json({"error": "person is not linked to this customer"}, 409)
+                db.execute(
+                    "UPDATE persons SET customer_organization_id = ?, updated_at = ? WHERE id = ?",
+                    (organization_id, now, person_id),
+                )
+                return self.send_json({"status": "bound", "personId": person_id, "customerOrganizationId": organization_id})
+            if path == "/api/people":
+                name = str(data.get("name", "")).strip()
+                if not name:
+                    return self.send_json({"error": "name is required"}, 400)
+                customer_id = data.get("customerId")
+                project_id = data.get("projectId")
+                if customer_id and not db.execute("SELECT 1 FROM customers WHERE id = ?", (customer_id,)).fetchone():
+                    return self.send_json({"error": "customer not found"}, 404)
+                if project_id and not db.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone():
+                    return self.send_json({"error": "project not found"}, 404)
+                cur = db.execute(
+                    """INSERT INTO persons
+                       (name, organization, title, person_type, phone, email, notes, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        name,
+                        str(data.get("organization", "")).strip(),
+                        str(data.get("title", "")).strip(),
+                        str(data.get("personType", "关键人")).strip() or "关键人",
+                        str(data.get("phone", "")).strip(),
+                        str(data.get("email", "")).strip(),
+                        str(data.get("notes", "")).strip(),
+                        now,
+                        now,
+                    ),
+                )
+                person_id = cur.lastrowid
+                if customer_id:
+                    db.execute(
+                        """INSERT OR IGNORE INTO customer_persons
+                           (customer_id, person_id, role, is_primary, created_at)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (customer_id, person_id, data.get("customerRole", "联系人"), int(bool(data.get("isPrimary"))), now),
+                    )
+                if project_id:
+                    db.execute(
+                        """INSERT OR IGNORE INTO project_persons
+                           (project_id, person_id, role, is_primary, created_at)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (project_id, person_id, data.get("projectRole", "项目联系人"), int(bool(data.get("isPrimary"))), now),
+                    )
+                return self.send_json(dict(db.execute("SELECT * FROM persons WHERE id = ?", (person_id,)).fetchone()), 201)
+            if path.startswith("/api/opportunities/") and path.endswith("/people"):
+                parts = path.strip("/").split("/")
+                try:
+                    opportunity_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid opportunity id"}, 400)
+                if not db.execute("SELECT 1 FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone():
+                    return self.send_json({"error": "opportunity not found"}, 404)
+                person_id = data.get("personId")
+                if not person_id:
+                    name = str(data.get("name", "")).strip()
+                    if not name:
+                        return self.send_json({"error": "personId or name is required"}, 400)
+                    cur = db.execute(
+                        """INSERT INTO persons
+                           (name, organization, title, person_type, phone, email, notes, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            name,
+                            str(data.get("organization", "")).strip(),
+                            str(data.get("title", "")).strip(),
+                            str(data.get("personType", "关键人")).strip() or "关键人",
+                            str(data.get("phone", "")).strip(),
+                            str(data.get("email", "")).strip(),
+                            str(data.get("notes", "")).strip(),
+                            now,
+                            now,
+                        ),
+                    )
+                    person_id = cur.lastrowid
+                elif not db.execute("SELECT 1 FROM persons WHERE id = ?", (person_id,)).fetchone():
+                    return self.send_json({"error": "person not found"}, 404)
+                role = str(data.get("role", "商机联系人")).strip() or "商机联系人"
+                db.execute(
+                    """INSERT INTO opportunity_persons
+                       (opportunity_id, person_id, role, influence_level, relationship_status,
+                        is_primary, notes, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(opportunity_id, person_id, role) DO UPDATE SET
+                         influence_level = excluded.influence_level,
+                         relationship_status = excluded.relationship_status,
+                         is_primary = excluded.is_primary,
+                         notes = excluded.notes,
+                         updated_at = excluded.updated_at""",
+                    (
+                        opportunity_id,
+                        person_id,
+                        role,
+                        str(data.get("influenceLevel", "未知")).strip() or "未知",
+                        str(data.get("relationshipStatus", "待建立")).strip() or "待建立",
+                        int(bool(data.get("isPrimary"))),
+                        str(data.get("relationshipNotes", data.get("notes", ""))).strip(),
+                        now,
+                        now,
+                    ),
+                )
+                db.execute("UPDATE persons SET updated_at = ? WHERE id = ?", (now, person_id))
+                return self.send_json({"status": "linked", "opportunityId": opportunity_id, "personId": person_id}, 201)
             if path == "/api/discovery/drafts":
                 content = str(data.get("contentBase64", ""))
                 if not content:
@@ -818,6 +2036,10 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute("UPDATE discovery_candidates SET review_status = 'confirmed' WHERE id = ?", (candidate["id"],))
                 db.execute("UPDATE discovery_runs SET status = 'confirmed', updated_at = ? WHERE id = ?", (now, run_id))
                 db.execute("INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)", (opportunity_id, "discovery_confirmed", f"现场发现已确认，项目 #{project_id}、标段 #{section_id} 已创建", now))
+                created_opportunity = db.execute("SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+                current_stage = stage_definition(db, created_opportunity["stage"])
+                if current_stage:
+                    create_stage_actions(db, created_opportunity, current_stage, "stage_plan", "discovery_confirmed", now)
                 return self.send_json({"status": "confirmed", "opportunityId": opportunity_id, "customerId": customer_id, "projectId": project_id, "sectionId": section_id}, 201)
             if path == "/api/opportunities":
                 required = ["name", "customer", "stage"]
@@ -834,6 +2056,10 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute("INSERT INTO semantic_fields (opportunity_id, field_name, field_type, field_value) VALUES (?, ?, ?, ?)", (oid, "业务标签", "semantic_tag", tag))
                 db.execute("INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)", (oid, "created", "商机对象已创建，已生成语义字段", now))
                 backfill_opportunity_relations(db, now)
+                created_opportunity = db.execute("SELECT * FROM opportunities WHERE id = ?", (oid,)).fetchone()
+                current_stage = stage_definition(db, created_opportunity["stage"])
+                if current_stage:
+                    create_stage_actions(db, created_opportunity, current_stage, "stage_plan", "opportunity_created", now)
                 return self.send_json(get_opportunity(db, oid), 201)
             if path.startswith("/api/opportunities/") and path.endswith("/events"):
                 try:
@@ -888,11 +2114,20 @@ class Handler(BaseHTTPRequestHandler):
                     "validated": True,
                 }
                 db.execute("UPDATE opportunities SET stage = ?, updated_at = ? WHERE id = ?", (new_stage, now, oid))
-                db.execute("""INSERT INTO opportunity_stage_transitions
+                transition_cur = db.execute("""INSERT INTO opportunity_stage_transitions
                     (opportunity_id, from_stage, to_stage, required_json, validation_json, actor, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)""", (
                     oid, old_name, new_stage, json.dumps(required, ensure_ascii=False),
                     json.dumps(validation, ensure_ascii=False), data.get("actor", "李盛云"), now))
+                complete_stage_actions(db, oid, target["code"], now)
+                created_actions = create_stage_actions(
+                    db,
+                    row,
+                    target,
+                    "stage_transition",
+                    transition_cur.lastrowid,
+                    now,
+                )
                 db.execute("INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)",
                            (oid, "stage_changed", f"商机阶段由 {old_name} 转换为 {new_stage}，阶段字段已校验", now))
                 return self.send_json({
@@ -902,17 +2137,50 @@ class Handler(BaseHTTPRequestHandler):
                     "missing": [],
                     "nextStage": target_name(db, target["nextCode"]),
                     "validation": validation,
+                    "actions": created_actions,
                 }, 200)
             if path.startswith("/api/agents/") and path.endswith("/run"):
                 agent_id = path.strip("/").split("/")[2]
-                if not db.execute("SELECT 1 FROM agents WHERE id = ?", (agent_id,)).fetchone():
+                agent_row = db.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
+                if not agent_row:
                     return self.send_json({"error": "agent not found"}, 404)
-                opportunity_id = data.get("opportunityId")
+                try:
+                    opportunity_id = int(data["opportunityId"]) if data.get("opportunityId") else None
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "invalid opportunity id"}, 400)
+                if opportunity_id is not None and not db.execute(
+                    "SELECT 1 FROM opportunities WHERE id = ?", (opportunity_id,)
+                ).fetchone():
+                    return self.send_json({"error": "opportunity not found"}, 404)
                 result = data.get("result") or "已完成语义分析，生成待确认的客户开发建议。"
                 cur = db.execute("INSERT INTO agent_runs (agent_id, opportunity_id, input_json, result, created_at) VALUES (?, ?, ?, ?, ?)", (agent_id, opportunity_id, json.dumps(data, ensure_ascii=False), result, now))
+                action = None
                 if opportunity_id:
+                    opportunity = db.execute(
+                        "SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)
+                    ).fetchone()
+                    action = create_action_record(
+                        db,
+                        title=data.get("actionTitle") or f"{agent_row['name']}：执行下一步建议",
+                        description=data.get("actionDescription") or result,
+                        action_type="agent_recommendation",
+                        priority=data.get("priority", "medium"),
+                        assignee=data.get("assignee") or opportunity["owner"],
+                        due_at=data.get("dueAt"),
+                        opportunity_id=opportunity_id,
+                        stage_code=stage_definition(db, opportunity["stage"])["code"]
+                        if stage_definition(db, opportunity["stage"]) else None,
+                        stage_name=stage_name(opportunity["stage"]),
+                        source_type="agent_recommendation",
+                        source_id=str(cur.lastrowid),
+                        source_agent_id=agent_id,
+                        source_agent_run_id=cur.lastrowid,
+                        created_by=data.get("actor", "李盛云"),
+                        dedupe_key=f"agent_run:{cur.lastrowid}",
+                        now=now,
+                    )
                     db.execute("INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)", (opportunity_id, "agent_run", f"{agent_id} 已运行：{result}", now))
-                return self.send_json({"id": cur.lastrowid, "agentId": agent_id, "result": result, "status": "completed"}, 201)
+                return self.send_json({"id": cur.lastrowid, "agentId": agent_id, "result": result, "status": "completed", "action": action}, 201)
         return self.send_json({"error": "not found"}, 404)
 
     def serve_file(self, path, content_type):
