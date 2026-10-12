@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 ROOT = Path(__file__).parent
 DB_DIR = ROOT / "data"
@@ -126,6 +126,22 @@ STAGE_DEFINITIONS = [
         "agent": "opportunity-progress",
     },
 ]
+
+RELATIONSHIP_SCORE_FACTORS = (
+    "interaction_frequency",
+    "recency",
+    "influence",
+    "history",
+    "duration",
+)
+
+DEFAULT_RELATIONSHIP_SCORE_WEIGHTS = {
+    "interaction_frequency": 0.25,
+    "recency": 0.25,
+    "influence": 0.20,
+    "history": 0.15,
+    "duration": 0.15,
+}
 
 LEGACY_STAGE_MAP = {
     "初步接触": "商机报备",
@@ -521,7 +537,462 @@ def init_db():
           FOREIGN KEY(source_agent_id) REFERENCES agents(id) ON DELETE SET NULL,
           FOREIGN KEY(source_agent_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
         );
+        CREATE TABLE IF NOT EXISTS customer_developments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_id INTEGER NOT NULL,
+          customer_organization_id INTEGER,
+          name TEXT NOT NULL,
+          owner TEXT NOT NULL DEFAULT '',
+          current_stage_code TEXT NOT NULL DEFAULT 'AT1',
+          current_stage_name TEXT NOT NULL DEFAULT '客户立项',
+          status TEXT NOT NULL DEFAULT 'active',
+          target TEXT NOT NULL DEFAULT '',
+          summary TEXT NOT NULL DEFAULT '',
+          next_action TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+          FOREIGN KEY(customer_organization_id) REFERENCES customer_organizations(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS customer_development_stage_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_development_id INTEGER NOT NULL,
+          stage_code TEXT NOT NULL,
+          stage_name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'in_progress',
+          required_json TEXT NOT NULL DEFAULT '{}',
+          notes TEXT NOT NULL DEFAULT '',
+          started_at TEXT NOT NULL,
+          completed_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(customer_development_id, stage_code),
+          FOREIGN KEY(customer_development_id) REFERENCES customer_developments(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS customer_development_health_scores (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_development_id INTEGER NOT NULL,
+          score INTEGER NOT NULL DEFAULT 0,
+          dimensions_json TEXT NOT NULL DEFAULT '{}',
+          reason TEXT NOT NULL DEFAULT '',
+          assessed_by TEXT NOT NULL DEFAULT 'manual',
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(customer_development_id) REFERENCES customer_developments(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS customer_development_strategies (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_development_id INTEGER NOT NULL,
+          strategy_type TEXT NOT NULL DEFAULT '经营策略',
+          title TEXT NOT NULL,
+          content TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'draft',
+          source_agent_id TEXT,
+          source_agent_run_id INTEGER,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(customer_development_id) REFERENCES customer_developments(id) ON DELETE CASCADE,
+          FOREIGN KEY(source_agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+          FOREIGN KEY(source_agent_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS customer_development_opportunities (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_development_id INTEGER NOT NULL,
+          opportunity_id INTEGER NOT NULL,
+          relation_type TEXT NOT NULL DEFAULT '重点商机',
+          notes TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(customer_development_id, opportunity_id),
+          FOREIGN KEY(customer_development_id) REFERENCES customer_developments(id) ON DELETE CASCADE,
+          FOREIGN KEY(opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS customer_development_projects (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_development_id INTEGER NOT NULL,
+          project_id INTEGER NOT NULL,
+          relation_type TEXT NOT NULL DEFAULT '重点项目',
+          notes TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(customer_development_id, project_id),
+          FOREIGN KEY(customer_development_id) REFERENCES customer_developments(id) ON DELETE CASCADE,
+          FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS customer_profiles (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_id INTEGER NOT NULL,
+          customer_organization_id INTEGER,
+          profile_type TEXT NOT NULL DEFAULT 'baseline',
+          version_no INTEGER NOT NULL DEFAULT 1,
+          scope_type TEXT NOT NULL DEFAULT 'customer',
+          status TEXT NOT NULL DEFAULT 'active',
+          profile_period_start TEXT,
+          profile_period_end TEXT,
+          completeness_score INTEGER,
+          confidence_score INTEGER,
+          last_assessed_at TEXT,
+          source_agent_id TEXT,
+          source_agent_run_id INTEGER,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(customer_id, customer_organization_id, version_no),
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+          FOREIGN KEY(customer_organization_id) REFERENCES customer_organizations(id) ON DELETE SET NULL,
+          FOREIGN KEY(source_agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+          FOREIGN KEY(source_agent_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS customer_profile_facts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          profile_id INTEGER NOT NULL,
+          fact_code TEXT NOT NULL,
+          fact_name TEXT NOT NULL,
+          category TEXT NOT NULL,
+          value_type TEXT NOT NULL DEFAULT 'text',
+          value_json TEXT NOT NULL DEFAULT 'null',
+          unit TEXT NOT NULL DEFAULT '',
+          confidence INTEGER,
+          source_type TEXT NOT NULL DEFAULT 'manual',
+          source_id TEXT NOT NULL DEFAULT '',
+          observed_at TEXT,
+          valid_from TEXT,
+          valid_to TEXT,
+          status TEXT NOT NULL DEFAULT 'current',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(profile_id, fact_code),
+          FOREIGN KEY(profile_id) REFERENCES customer_profiles(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS customer_profile_scores (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          profile_id INTEGER NOT NULL,
+          score_type TEXT NOT NULL,
+          score INTEGER NOT NULL DEFAULT 0,
+          level TEXT NOT NULL DEFAULT '',
+          dimensions_json TEXT NOT NULL DEFAULT '{}',
+          scoring_rule_version TEXT NOT NULL DEFAULT '',
+          reason TEXT NOT NULL DEFAULT '',
+          source_agent_id TEXT,
+          source_agent_run_id INTEGER,
+          assessed_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(profile_id, score_type, assessed_at),
+          FOREIGN KEY(profile_id) REFERENCES customer_profiles(id) ON DELETE CASCADE,
+          FOREIGN KEY(source_agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+          FOREIGN KEY(source_agent_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS customer_profile_summaries (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          profile_id INTEGER NOT NULL,
+          summary_type TEXT NOT NULL,
+          title TEXT NOT NULL DEFAULT '',
+          content TEXT NOT NULL,
+          structured_json TEXT NOT NULL DEFAULT '{}',
+          generated_by_agent_id TEXT,
+          generated_by_agent_run_id INTEGER,
+          model_name TEXT NOT NULL DEFAULT '',
+          prompt_version TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'published',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY(profile_id) REFERENCES customer_profiles(id) ON DELETE CASCADE,
+          FOREIGN KEY(generated_by_agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+          FOREIGN KEY(generated_by_agent_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS customer_profile_evidences (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          profile_id INTEGER NOT NULL,
+          evidence_type TEXT NOT NULL,
+          source_object_type TEXT NOT NULL,
+          source_object_id TEXT NOT NULL,
+          evidence_text TEXT NOT NULL DEFAULT '',
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          confidence INTEGER,
+          observed_at TEXT,
+          extracted_by_agent_id TEXT,
+          extracted_by_agent_run_id INTEGER,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(profile_id) REFERENCES customer_profiles(id) ON DELETE CASCADE,
+          FOREIGN KEY(extracted_by_agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+          FOREIGN KEY(extracted_by_agent_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS customer_profile_projects (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          profile_id INTEGER NOT NULL,
+          project_id INTEGER NOT NULL,
+          relation_type TEXT NOT NULL DEFAULT '重点项目',
+          importance INTEGER,
+          notes TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(profile_id, project_id),
+          FOREIGN KEY(profile_id) REFERENCES customer_profiles(id) ON DELETE CASCADE,
+          FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS customer_profile_opportunities (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          profile_id INTEGER NOT NULL,
+          opportunity_id INTEGER NOT NULL,
+          relation_type TEXT NOT NULL DEFAULT '重点商机',
+          importance INTEGER,
+          notes TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(profile_id, opportunity_id),
+          FOREIGN KEY(profile_id) REFERENCES customer_profiles(id) ON DELETE CASCADE,
+          FOREIGN KEY(opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS customer_profile_persons (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          profile_id INTEGER NOT NULL,
+          person_id INTEGER NOT NULL,
+          relation_type TEXT NOT NULL DEFAULT '关键关系',
+          influence_level TEXT NOT NULL DEFAULT '',
+          relationship_health TEXT NOT NULL DEFAULT '',
+          notes TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(profile_id, person_id),
+          FOREIGN KEY(profile_id) REFERENCES customer_profiles(id) ON DELETE CASCADE,
+          FOREIGN KEY(person_id) REFERENCES persons(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS customer_profile_developments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          profile_id INTEGER NOT NULL,
+          customer_development_id INTEGER NOT NULL,
+          relation_type TEXT NOT NULL DEFAULT '当前开发主线',
+          relevance_score INTEGER,
+          notes TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(profile_id, customer_development_id),
+          FOREIGN KEY(profile_id) REFERENCES customer_profiles(id) ON DELETE CASCADE,
+          FOREIGN KEY(customer_development_id) REFERENCES customer_developments(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS customer_fact_extraction_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_id INTEGER NOT NULL,
+          profile_id INTEGER NOT NULL,
+          trigger_type TEXT NOT NULL DEFAULT 'manual',
+          source_types_json TEXT NOT NULL DEFAULT '[]',
+          rule_version TEXT NOT NULL DEFAULT 'customer-fact-extraction-v1',
+          status TEXT NOT NULL DEFAULT 'running',
+          dry_run INTEGER NOT NULL DEFAULT 0,
+          candidate_count INTEGER NOT NULL DEFAULT 0,
+          accepted_count INTEGER NOT NULL DEFAULT 0,
+          review_count INTEGER NOT NULL DEFAULT 0,
+          agent_id TEXT,
+          agent_run_id INTEGER,
+          error_message TEXT NOT NULL DEFAULT '',
+          started_at TEXT NOT NULL,
+          completed_at TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+          FOREIGN KEY(profile_id) REFERENCES customer_profiles(id) ON DELETE CASCADE,
+          FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+          FOREIGN KEY(agent_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS customer_fact_extraction_candidates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id INTEGER NOT NULL,
+          customer_id INTEGER NOT NULL,
+          profile_id INTEGER NOT NULL,
+          fact_code TEXT NOT NULL,
+          fact_name TEXT NOT NULL,
+          category TEXT NOT NULL,
+          value_type TEXT NOT NULL DEFAULT 'text',
+          value_json TEXT NOT NULL DEFAULT 'null',
+          confidence INTEGER NOT NULL DEFAULT 0,
+          rule_code TEXT NOT NULL,
+          source_object_type TEXT NOT NULL,
+          source_object_id TEXT NOT NULL,
+          source_text TEXT NOT NULL DEFAULT '',
+          observed_at TEXT,
+          status TEXT NOT NULL DEFAULT 'needs_review',
+          applied_fact_id INTEGER,
+          created_at TEXT NOT NULL,
+          reviewed_at TEXT,
+          FOREIGN KEY(run_id) REFERENCES customer_fact_extraction_runs(id) ON DELETE CASCADE,
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+          FOREIGN KEY(profile_id) REFERENCES customer_profiles(id) ON DELETE CASCADE,
+          FOREIGN KEY(applied_fact_id) REFERENCES customer_profile_facts(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS customer_profile_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_id INTEGER NOT NULL,
+          profile_id INTEGER,
+          event_type TEXT NOT NULL,
+          source_object_type TEXT NOT NULL,
+          source_object_id TEXT NOT NULL,
+          payload_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'pending',
+          attempts INTEGER NOT NULL DEFAULT 0,
+          fact_extraction_run_id INTEGER,
+          agent_run_id INTEGER,
+          error_message TEXT NOT NULL DEFAULT '',
+          occurred_at TEXT NOT NULL,
+          processed_at TEXT,
+          created_at TEXT NOT NULL,
+          dedupe_key TEXT NOT NULL UNIQUE,
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+          FOREIGN KEY(profile_id) REFERENCES customer_profiles(id) ON DELETE SET NULL,
+          FOREIGN KEY(fact_extraction_run_id) REFERENCES customer_fact_extraction_runs(id) ON DELETE SET NULL,
+          FOREIGN KEY(agent_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS customer_profile_scoring_models (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          model_code TEXT NOT NULL,
+          name TEXT NOT NULL,
+          version_no TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'draft',
+          target_scope TEXT NOT NULL DEFAULT 'customer_profile',
+          description TEXT NOT NULL DEFAULT '',
+          is_default INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          published_at TEXT,
+          UNIQUE(model_code, version_no)
+        );
+        CREATE TABLE IF NOT EXISTS customer_profile_scoring_dimensions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          model_id INTEGER NOT NULL,
+          dimension_code TEXT NOT NULL,
+          name TEXT NOT NULL,
+          calculation_type TEXT NOT NULL DEFAULT 'rules',
+          weight REAL NOT NULL DEFAULT 0,
+          score_min INTEGER NOT NULL DEFAULT 0,
+          score_max INTEGER NOT NULL DEFAULT 100,
+          source_fact_codes_json TEXT NOT NULL DEFAULT '[]',
+          source_metrics_json TEXT NOT NULL DEFAULT '[]',
+          config_json TEXT NOT NULL DEFAULT '{}',
+          enabled INTEGER NOT NULL DEFAULT 1,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(model_id, dimension_code),
+          FOREIGN KEY(model_id) REFERENCES customer_profile_scoring_models(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS customer_profile_scoring_rules (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          model_id INTEGER NOT NULL,
+          dimension_id INTEGER,
+          rule_code TEXT NOT NULL,
+          name TEXT NOT NULL,
+          condition_json TEXT NOT NULL DEFAULT '{}',
+          score REAL NOT NULL DEFAULT 0,
+          priority INTEGER NOT NULL DEFAULT 0,
+          explanation TEXT NOT NULL DEFAULT '',
+          config_json TEXT NOT NULL DEFAULT '{}',
+          enabled INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(model_id, rule_code),
+          FOREIGN KEY(model_id) REFERENCES customer_profile_scoring_models(id) ON DELETE CASCADE,
+          FOREIGN KEY(dimension_id) REFERENCES customer_profile_scoring_dimensions(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS relationship_entities (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          entity_type TEXT NOT NULL,
+          entity_ref_id TEXT NOT NULL,
+          entity_name TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'active',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(entity_type, entity_ref_id)
+        );
+        CREATE TABLE IF NOT EXISTS relationship_types (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          code TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          source_entity_type TEXT NOT NULL,
+          target_entity_type TEXT NOT NULL,
+          category TEXT NOT NULL DEFAULT '',
+          directionality TEXT NOT NULL DEFAULT 'directed',
+          description TEXT NOT NULL DEFAULT '',
+          default_weight INTEGER NOT NULL DEFAULT 50,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS relationships (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_entity_id INTEGER NOT NULL,
+          target_entity_id INTEGER NOT NULL,
+          relationship_type_id INTEGER NOT NULL,
+          strength_score INTEGER NOT NULL DEFAULT 0,
+          strength_level TEXT NOT NULL DEFAULT '未知关系',
+          status TEXT NOT NULL DEFAULT 'active',
+          confidence INTEGER NOT NULL DEFAULT 0,
+          last_contact_at TEXT,
+          interaction_count INTEGER NOT NULL DEFAULT 0,
+          first_established_at TEXT,
+          last_evaluated_at TEXT,
+          notes TEXT NOT NULL DEFAULT '',
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(source_entity_id, target_entity_id, relationship_type_id),
+          FOREIGN KEY(source_entity_id) REFERENCES relationship_entities(id) ON DELETE CASCADE,
+          FOREIGN KEY(target_entity_id) REFERENCES relationship_entities(id) ON DELETE CASCADE,
+          FOREIGN KEY(relationship_type_id) REFERENCES relationship_types(id) ON DELETE RESTRICT
+        );
+        CREATE TABLE IF NOT EXISTS relationship_scores (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          relationship_id INTEGER NOT NULL,
+          score INTEGER NOT NULL DEFAULT 0,
+          level TEXT NOT NULL DEFAULT '未知关系',
+          interaction_frequency_score INTEGER,
+          recency_score INTEGER,
+          influence_score INTEGER,
+          history_score INTEGER,
+           duration_score INTEGER,
+           weights_json TEXT NOT NULL DEFAULT '{}',
+           components_json TEXT NOT NULL DEFAULT '{}',
+          reason TEXT NOT NULL DEFAULT '',
+          calculated_by TEXT NOT NULL DEFAULT 'manual',
+          calculated_at TEXT NOT NULL,
+          FOREIGN KEY(relationship_id) REFERENCES relationships(id) ON DELETE CASCADE
+        );
+         CREATE TABLE IF NOT EXISTS relationship_score_configs (
+           id INTEGER PRIMARY KEY AUTOINCREMENT,
+           code TEXT NOT NULL UNIQUE,
+           name TEXT NOT NULL,
+           interaction_frequency_weight REAL NOT NULL DEFAULT 0.25,
+           recency_weight REAL NOT NULL DEFAULT 0.25,
+           influence_weight REAL NOT NULL DEFAULT 0.20,
+           history_weight REAL NOT NULL DEFAULT 0.15,
+           duration_weight REAL NOT NULL DEFAULT 0.15,
+           status TEXT NOT NULL DEFAULT 'active',
+           is_default INTEGER NOT NULL DEFAULT 0,
+           description TEXT NOT NULL DEFAULT '',
+           created_at TEXT NOT NULL,
+           updated_at TEXT NOT NULL
+         );
+        CREATE TABLE IF NOT EXISTS relationship_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          relationship_id INTEGER NOT NULL,
+          event_type TEXT NOT NULL,
+          event_time TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT 'manual',
+          impact_score INTEGER NOT NULL DEFAULT 0,
+          before_score INTEGER NOT NULL DEFAULT 0,
+          after_score INTEGER NOT NULL DEFAULT 0,
+          description TEXT NOT NULL DEFAULT '',
+          evidence_type TEXT NOT NULL DEFAULT '',
+          evidence_ref TEXT NOT NULL DEFAULT '',
+          created_by TEXT NOT NULL DEFAULT 'manual',
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(relationship_id) REFERENCES relationships(id) ON DELETE CASCADE
+        );
         """)
+        score_columns = {row[1] for row in db.execute("PRAGMA table_info(relationship_scores)").fetchall()}
+        for column, definition in [
+            ("duration_score", "INTEGER"),
+            ("weights_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("components_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ]:
+            if column not in score_columns:
+                db.execute(f"ALTER TABLE relationship_scores ADD COLUMN {column} {definition}")
         columns = {row[1] for row in db.execute("PRAGMA table_info(opportunities)").fetchall()}
         if "source_category" not in columns:
             db.execute("ALTER TABLE opportunities ADD COLUMN source_category TEXT NOT NULL DEFAULT '内部信息'")
@@ -536,6 +1007,7 @@ def init_db():
             ("persons", "customer_organization_id", "INTEGER"),
             ("opportunities", "customer_organization_id", "INTEGER"),
             ("opportunities", "sales_assignment_id", "INTEGER"),
+            ("actions", "customer_development_id", "INTEGER"),
         ]:
             columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
             if column not in columns:
@@ -573,6 +1045,42 @@ def init_db():
         db.execute("CREATE INDEX IF NOT EXISTS idx_actions_opportunity_id ON actions(opportunity_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_actions_status ON actions(status)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_actions_assignee ON actions(assignee)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_developments_customer_id ON customer_developments(customer_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_development_stage_records_development_id ON customer_development_stage_records(customer_development_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_development_health_scores_development_id ON customer_development_health_scores(customer_development_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_development_strategies_development_id ON customer_development_strategies(customer_development_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_development_opportunities_development_id ON customer_development_opportunities(customer_development_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_development_opportunities_opportunity_id ON customer_development_opportunities(opportunity_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_development_projects_development_id ON customer_development_projects(customer_development_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_development_projects_project_id ON customer_development_projects(project_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_actions_customer_development_id ON actions(customer_development_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profiles_customer_id ON customer_profiles(customer_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profiles_status ON customer_profiles(status)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_facts_profile_id ON customer_profile_facts(profile_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_scores_profile_id ON customer_profile_scores(profile_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_summaries_profile_id ON customer_profile_summaries(profile_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_evidences_profile_id ON customer_profile_evidences(profile_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_projects_profile_id ON customer_profile_projects(profile_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_opportunities_profile_id ON customer_profile_opportunities(profile_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_persons_profile_id ON customer_profile_persons(profile_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_developments_profile_id ON customer_profile_developments(profile_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_fact_extraction_runs_profile_id ON customer_fact_extraction_runs(profile_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_fact_extraction_runs_customer_id ON customer_fact_extraction_runs(customer_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_fact_extraction_candidates_run_id ON customer_fact_extraction_candidates(run_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_fact_extraction_candidates_profile_fact ON customer_fact_extraction_candidates(profile_id, fact_code)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_events_customer_id ON customer_profile_events(customer_id, created_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_events_profile_status ON customer_profile_events(profile_id, status, created_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_events_source ON customer_profile_events(source_object_type, source_object_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_scoring_models_status ON customer_profile_scoring_models(status, is_default)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_scoring_dimensions_model ON customer_profile_scoring_dimensions(model_id, enabled, sort_order)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_scoring_rules_model_dimension ON customer_profile_scoring_rules(model_id, dimension_id, enabled, priority)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_entities_type_ref ON relationship_entities(entity_type, entity_ref_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationships_source_entity_id ON relationships(source_entity_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationships_target_entity_id ON relationships(target_entity_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationships_type_id ON relationships(relationship_type_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_scores_relationship_id ON relationship_scores(relationship_id)")
+         db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_score_configs_status ON relationship_score_configs(status, is_default)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_events_relationship_id ON relationship_events(relationship_id)")
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_opportunities_project_section_id ON opportunities(project_section_id) WHERE project_section_id IS NOT NULL")
         agent_count = db.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
         if agent_count == 0:
@@ -581,6 +1089,13 @@ def init_db():
                 for skill in skills.split(','):
                     db.execute("INSERT INTO agent_skills (agent_id, name, description, linked_assets) VALUES (?, ?, ?, ?)", (agent_id, skill, f"{skill}：读取客户、商机与涂料行业语义后生成可解释结果。", assets))
         seed_initial_actions(db, now)
+        seed_customer_developments(db, now)
+        seed_customer_development_links(db, now)
+        seed_customer_profiles(db, now)
+        seed_customer_profile_scoring_models(db, now)
+        seed_relationship_ontology(db, now)
+         seed_relationship_score_config(db, now)
+         backfill_relationship_scores(db, now)
 
 def seed_organization_ontology(db, now):
     """初始化我方销售组织，并为现有客户建立集团根节点。"""
@@ -869,7 +1384,7 @@ def serialize_action(row):
     )
     return item
 
-def get_actions(db, opportunity_id=None, project_id=None, status=None):
+def get_actions(db, opportunity_id=None, project_id=None, status=None, customer_development_id=None):
     clauses = []
     values = []
     if opportunity_id is not None:
@@ -878,6 +1393,9 @@ def get_actions(db, opportunity_id=None, project_id=None, status=None):
     if project_id is not None:
         clauses.append("a.project_id = ?")
         values.append(project_id)
+    if customer_development_id is not None:
+        clauses.append("a.customer_development_id = ?")
+        values.append(customer_development_id)
     if status:
         clauses.append("a.status = ?")
         values.append(status)
@@ -914,6 +1432,7 @@ def create_action_record(
     project_id=None,
     customer_id=None,
     customer_organization_id=None,
+    customer_development_id=None,
     person_id=None,
     stage_code=None,
     stage_name=None,
@@ -949,6 +1468,19 @@ def create_action_record(
         "SELECT 1 FROM customer_organizations WHERE id = ?", (customer_organization_id,)
     ).fetchone():
         raise ValueError("customer organization not found")
+    if customer_development_id is not None:
+        development = db.execute(
+            "SELECT * FROM customer_developments WHERE id = ?",
+            (customer_development_id,),
+        ).fetchone()
+        if not development:
+            raise ValueError("customer development not found")
+        customer_id = customer_id or development["customer_id"]
+        customer_organization_id = customer_organization_id or development["customer_organization_id"]
+    if person_id is not None and not db.execute(
+        "SELECT 1 FROM persons WHERE id = ?", (person_id,)
+    ).fetchone():
+        raise ValueError("person not found")
     if source_agent_id is not None and not db.execute(
         "SELECT 1 FROM agents WHERE id = ?", (source_agent_id,)
     ).fetchone():
@@ -957,10 +1489,10 @@ def create_action_record(
     db.execute(
         """INSERT OR IGNORE INTO actions
            (title, description, action_type, status, priority, assignee, due_at,
-            opportunity_id, project_id, customer_id, customer_organization_id, person_id,
+            opportunity_id, project_id, customer_id, customer_organization_id, customer_development_id, person_id,
             stage_code, stage_name, source_type, source_id, source_agent_id,
             source_agent_run_id, created_by, created_at, updated_at, completed_at, dedupe_key)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             str(title).strip() or "未命名行动",
             str(description).strip(),
@@ -973,6 +1505,7 @@ def create_action_record(
             project_id,
             customer_id,
             customer_organization_id,
+            customer_development_id,
             person_id,
             stage_code,
             stage_name,
@@ -992,6 +1525,97 @@ def create_action_record(
     else:
         row = db.execute("SELECT * FROM actions WHERE rowid = last_insert_rowid()").fetchone()
     return serialize_action(row) if row else None
+
+ACTION_RELATIONSHIP_EVENT_TYPES = {
+    "visit": ("拜访", 5),
+    "call": ("电话", 2),
+    "meeting": ("会议", 5),
+    "wechat": ("微信沟通", 2),
+    "business_event": ("商务活动", 3),
+    "拜访": ("拜访", 5),
+    "电话": ("电话", 2),
+    "会议": ("会议", 5),
+    "微信沟通": ("微信沟通", 2),
+    "商务活动": ("商务活动", 3),
+}
+
+def record_action_relationship_event(db, action, now=None):
+    """将已完成的互动行动沉淀为关系事件，并保证同一行动只记一次。"""
+    action = dict(action)
+    if action.get("status") != "completed" or not action.get("person_id"):
+        return None
+    event_definition = ACTION_RELATIONSHIP_EVENT_TYPES.get(str(action.get("action_type", "")).strip())
+    if not event_definition:
+        return None
+    now = now or datetime.now(timezone.utc).isoformat()
+    evidence_ref = f"action:{action['id']}"
+    existing = db.execute(
+        "SELECT relationship_id FROM relationship_events WHERE evidence_type = 'action' AND evidence_ref = ?",
+        (evidence_ref,),
+    ).fetchone()
+    if existing:
+        return get_relationship_detail(db, existing["relationship_id"])
+    target_candidates = []
+    if action.get("opportunity_id"):
+        target_candidates.append(("Opportunity", action["opportunity_id"]))
+    if action.get("project_id"):
+        target_candidates.append(("Project", action["project_id"]))
+    if action.get("customer_id"):
+        target_candidates.append(("Customer", action["customer_id"]))
+    relationship = None
+    for target_type, target_id in target_candidates:
+        relationship = db.execute(
+            """SELECT r.*
+               FROM relationships r
+               JOIN relationship_entities se ON se.id = r.source_entity_id
+               JOIN relationship_entities te ON te.id = r.target_entity_id
+               WHERE se.entity_type = 'Person' AND se.entity_ref_id = ?
+                 AND te.entity_type = ? AND te.entity_ref_id = ?
+               ORDER BY r.strength_score DESC, r.id DESC LIMIT 1""",
+            (str(action["person_id"]), target_type, str(target_id)),
+        ).fetchone()
+        if relationship:
+            break
+    if not relationship:
+        return None
+    event_type, impact_score = event_definition
+    before_score = int(relationship["strength_score"] or 0)
+    after_score = before_score
+    event_time = action.get("completed_at") or now
+    event_cur = db.execute(
+        """INSERT INTO relationship_events
+           (relationship_id, event_type, event_time, source, impact_score,
+            before_score, after_score, description, evidence_type,
+            evidence_ref, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            relationship["id"],
+            event_type,
+            event_time,
+            "action",
+            impact_score,
+            before_score,
+            after_score,
+            str(action.get("description") or action.get("title") or "").strip(),
+            "action",
+            evidence_ref,
+            str(action.get("created_by") or "李盛云").strip() or "李盛云",
+            now,
+        ),
+    )
+    db.execute(
+        """UPDATE relationships
+           SET strength_score = ?, strength_level = ?, last_contact_at = ?,
+               interaction_count = interaction_count + 1, updated_at = ?
+           WHERE id = ?""",
+        (after_score, relationship_score_level(after_score), event_time, now, relationship["id"]),
+    )
+    detail = calculate_relationship_strength_auto(db, relationship["id"], now)
+    db.execute(
+        "UPDATE relationship_events SET after_score = ? WHERE id = ?",
+        (detail["strength_score"], event_cur.lastrowid),
+    )
+    return get_relationship_detail(db, relationship["id"])
 
 def create_stage_actions(db, opportunity, current_stage, source_type, source_id, now):
     next_code = current_stage.get("nextCode")
@@ -1049,6 +1673,1986 @@ def seed_initial_actions(db, now):
                 "bootstrap",
                 now,
             )
+
+CUSTOMER_DEVELOPMENT_STAGES = [
+    ("AT1", "客户立项", 1, ["customerConfirmed", "decisionMap"]),
+    ("AT2", "需求引导", 2, ["businessNeed", "solutionPlan"]),
+    ("AT3", "招投标", 3, ["bidPlan", "priceStrategy"]),
+    ("AT4", "履约交付", 4, ["deliveryPlan", "qualityPlan"]),
+    ("AT5", "履约服务", 5, ["servicePlan", "satisfaction"]),
+    ("AT6", "复盘沉淀", 6, ["reviewResult", "bestPractice"]),
+]
+
+RELATIONSHIP_TYPE_DEFINITIONS = [
+    ("person_customer_owner", "客户负责人", "Person", "Customer", "人-客户", "负责人"),
+    ("person_customer_contact", "客户联系人", "Person", "Customer", "人-客户", "联系人"),
+    ("person_customer_decision_maker", "客户决策人", "Person", "Customer", "人-客户", "决策链"),
+    ("person_customer_influencer", "客户影响人", "Person", "Customer", "人-客户", "决策链"),
+    ("person_customer_procurement_owner", "采购负责人", "Person", "Customer", "人-客户", "决策链"),
+    ("person_customer_technical_owner", "技术负责人", "Person", "Customer", "人-客户", "决策链"),
+    ("person_project_owner", "项目负责人", "Person", "Project", "人-项目", "项目管理"),
+    ("person_project_client_representative", "甲方代表", "Person", "Project", "人-项目", "项目管理"),
+    ("person_project_design_lead", "设计负责人", "Person", "Project", "人-项目", "项目管理"),
+    ("person_project_contractor_lead", "施工负责人", "Person", "Project", "人-项目", "项目管理"),
+    ("person_project_procurement_owner", "项目采购负责人", "Person", "Project", "人-项目", "项目管理"),
+    ("person_opportunity_sponsor", "商机发起人", "Person", "Opportunity", "人-商机", "商机推进"),
+    ("person_opportunity_decision_maker", "商机关键决策人", "Person", "Opportunity", "人-商机", "商机推进"),
+    ("person_opportunity_influencer", "商机竞争影响人", "Person", "Opportunity", "人-商机", "商机推进"),
+    ("organization_parent_subsidiary", "母子公司", "Organization", "Organization", "企业关系", "组织关系"),
+    ("organization_partner", "合作伙伴", "Organization", "Organization", "企业关系", "生态关系"),
+    ("organization_competitor", "竞争关系", "Organization", "Organization", "企业关系", "竞争关系"),
+    ("organization_supplier", "供应关系", "Organization", "Organization", "企业关系", "供应链"),
+    ("agent_supports_object", "Agent服务对象", "Agent", "Customer", "智能体关系", "Agent"),
+]
+
+def customer_development_stage(code):
+    for item in CUSTOMER_DEVELOPMENT_STAGES:
+        if item[0] == code:
+            return {"code": item[0], "name": item[1], "sequence": item[2], "required": item[3]}
+    return None
+
+def get_customer_development(db, development_id):
+    row = db.execute(
+        """SELECT cd.*, c.name AS customer_name, co.name AS customer_organization_name
+           FROM customer_developments cd
+           JOIN customers c ON c.id = cd.customer_id
+           LEFT JOIN customer_organizations co ON co.id = cd.customer_organization_id
+           WHERE cd.id = ?""",
+        (development_id,),
+    ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["currentStage"] = {
+        "code": item["current_stage_code"],
+        "name": item["current_stage_name"],
+        "sequence": customer_development_stage(item["current_stage_code"])["sequence"]
+        if customer_development_stage(item["current_stage_code"]) else None,
+    }
+    item["stageRecords"] = []
+    for record in db.execute(
+        """SELECT * FROM customer_development_stage_records
+           WHERE customer_development_id = ?
+           ORDER BY id""",
+        (development_id,),
+    ).fetchall():
+        record_item = dict(record)
+        record_item["required"] = json.loads(record_item.pop("required_json") or "{}")
+        item["stageRecords"].append(record_item)
+    health = db.execute(
+        """SELECT * FROM customer_development_health_scores
+           WHERE customer_development_id = ?
+           ORDER BY created_at DESC, id DESC LIMIT 1""",
+        (development_id,),
+    ).fetchone()
+    item["healthScore"] = None
+    if health:
+        health_item = dict(health)
+        health_item["dimensions"] = json.loads(health_item.pop("dimensions_json") or "{}")
+        item["healthScore"] = health_item
+    item["strategies"] = [dict(x) for x in db.execute(
+        """SELECT cds.*, a.name AS source_agent_name
+           FROM customer_development_strategies cds
+           LEFT JOIN agents a ON a.id = cds.source_agent_id
+           WHERE cds.customer_development_id = ?
+           ORDER BY cds.updated_at DESC, cds.id DESC""",
+        (development_id,),
+    ).fetchall()]
+    item["actions"] = get_actions(db, customer_development_id=development_id)
+    item["opportunities"] = [dict(x) for x in db.execute(
+        """SELECT cdo.*, o.name, o.customer, o.stage, o.amount, o.business_type,
+                         o.owner, o.project_id, p.name AS project_name
+           FROM customer_development_opportunities cdo
+           JOIN opportunities o ON o.id = cdo.opportunity_id
+           LEFT JOIN projects p ON p.id = o.project_id
+           WHERE cdo.customer_development_id = ?
+           ORDER BY cdo.updated_at DESC, cdo.id DESC""",
+        (development_id,),
+    ).fetchall()]
+    item["projects"] = [dict(x) for x in db.execute(
+        """SELECT cdp.*, p.name, p.project_type, p.address, p.status,
+                         p.customer_organization_id, co.name AS customer_organization_name
+           FROM customer_development_projects cdp
+           JOIN projects p ON p.id = cdp.project_id
+           LEFT JOIN customer_organizations co ON co.id = p.customer_organization_id
+           WHERE cdp.customer_development_id = ?
+           ORDER BY cdp.updated_at DESC, cdp.id DESC""",
+        (development_id,),
+    ).fetchall()]
+    item["stageDefinitions"] = [
+        {"code": code, "name": name, "sequence": sequence, "required": required}
+        for code, name, sequence, required in CUSTOMER_DEVELOPMENT_STAGES
+    ]
+    return item
+
+def seed_customer_development_links(db, now):
+    development = db.execute(
+        "SELECT * FROM customer_developments ORDER BY id LIMIT 1"
+    ).fetchone()
+    if not development:
+        return
+    for row in db.execute(
+        """SELECT id FROM opportunities
+           WHERE customer_id = ?
+           ORDER BY updated_at DESC, id DESC LIMIT 3""",
+        (development["customer_id"],),
+    ).fetchall():
+        db.execute(
+            """INSERT OR IGNORE INTO customer_development_opportunities
+               (customer_development_id, opportunity_id, relation_type, created_at, updated_at)
+               VALUES (?, ?, '重点商机', ?, ?)""",
+            (development["id"], row["id"], now, now),
+        )
+    for row in db.execute(
+        """SELECT id FROM projects
+           WHERE customer_id = ?
+           ORDER BY updated_at DESC, id DESC LIMIT 3""",
+        (development["customer_id"],),
+    ).fetchall():
+        db.execute(
+            """INSERT OR IGNORE INTO customer_development_projects
+               (customer_development_id, project_id, relation_type, created_at, updated_at)
+               VALUES (?, ?, '重点项目', ?, ?)""",
+            (development["id"], row["id"], now, now),
+        )
+
+def seed_customer_developments(db, now):
+    if db.execute("SELECT COUNT(*) FROM customer_developments").fetchone()[0]:
+        return
+    customer = db.execute("SELECT * FROM customers ORDER BY id LIMIT 1").fetchone()
+    if not customer:
+        return
+    organization = db.execute(
+        """SELECT * FROM customer_organizations
+           WHERE customer_id = ? ORDER BY parent_id IS NOT NULL, id LIMIT 1""",
+        (customer["id"],),
+    ).fetchone()
+    cur = db.execute(
+        """INSERT INTO customer_developments
+           (customer_id, customer_organization_id, name, owner, current_stage_code,
+            current_stage_name, target, summary, next_action, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            customer["id"],
+            organization["id"] if organization else None,
+            f"{customer['name']}客户开发",
+            "李盛云",
+            "AT2",
+            "需求引导",
+            "建立集团客户长期合作与工程项目入口",
+            "已完成客户立项，进入需求引导与关键人覆盖。",
+            "补齐采购、设计和工程关键人，完成方案共创。",
+            now,
+            now,
+        ),
+    )
+    development_id = cur.lastrowid
+    for index, (code, name, sequence, required) in enumerate(CUSTOMER_DEVELOPMENT_STAGES):
+        if sequence > 2:
+            break
+        db.execute(
+            """INSERT INTO customer_development_stage_records
+               (customer_development_id, stage_code, stage_name, status, required_json,
+                notes, started_at, completed_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                development_id,
+                code,
+                name,
+                "completed" if code == "AT1" else "in_progress",
+                json.dumps({key: "已确认" for key in required}, ensure_ascii=False),
+                "初始化客户开发阶段记录",
+                now,
+                now if code == "AT1" else None,
+                now,
+                now,
+            ),
+        )
+    db.execute(
+        """INSERT INTO customer_development_health_scores
+           (customer_development_id, score, dimensions_json, reason, assessed_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            development_id,
+            78,
+            json.dumps({"customerValue": 90, "opportunity": 80, "relationshipCoverage": 60}, ensure_ascii=False),
+            "客户价值高，但采购与财务关系尚未完整建立。",
+            "customer-insight",
+            now,
+        ),
+    )
+
+PROFILE_FACT_DEFINITIONS = [
+    ("business_model", "业务模式", "business_model", "text"),
+    ("purchase_mode", "采购模式", "purchase_behavior", "enum"),
+    ("decision_cycle", "决策周期", "purchase_behavior", "text"),
+    ("strategic_importance", "战略重要性", "customer_value", "enum"),
+    ("annual_purchase_value", "年度采购规模", "customer_value", "number"),
+    ("growth_direction", "增长方向", "business_model", "text"),
+    ("relationship_coverage", "关系覆盖情况", "relationship", "json"),
+    ("product_penetration_gap", "产品渗透缺口", "product_penetration", "json"),
+    ("competitor_pattern", "竞品使用情况", "product_penetration", "json"),
+    ("customer_risk", "客户经营风险", "risk", "json"),
+]
+
+FACT_EXTRACTION_SOURCE_TYPES = {
+    "visit_record": "拜访记录 / 业务事件",
+    "action": "Action行动任务",
+    "opportunity": "商机数据",
+    "project": "项目数据",
+    "document_ocr": "文档 / OCR文本",
+    "person": "关键人 / 关系数据",
+}
+
+CUSTOMER_FACT_EXTRACTION_RULES = [
+    {
+        "code": "opportunity.business_model",
+        "factCode": "business_model",
+        "name": "从商机和项目识别业务模式",
+        "sources": ["opportunity", "project", "document_ocr"],
+        "description": "出现工程项目、厂房、园区或项目型业务描述时，识别为工程项目型客户。",
+        "autoAcceptThreshold": 70,
+    },
+    {
+        "code": "opportunity.purchase_mode",
+        "factCode": "purchase_mode",
+        "name": "从商机阶段和文本识别采购模式",
+        "sources": ["visit_record", "action", "opportunity", "person", "document_ocr"],
+        "description": "根据招投标、采购、供应商准入等关键词识别客户采购路径。",
+        "autoAcceptThreshold": 70,
+    },
+    {
+        "code": "conversation.decision_cycle",
+        "factCode": "decision_cycle",
+        "name": "从业务文本识别决策周期",
+        "sources": ["visit_record", "action", "opportunity", "document_ocr"],
+        "description": "从文本中的天、周、月和招投标节点提取决策周期。",
+        "autoAcceptThreshold": 75,
+    },
+    {
+        "code": "relationship.role_coverage",
+        "factCode": "relationship_coverage",
+        "name": "识别客户关系角色覆盖",
+        "sources": ["visit_record", "action", "opportunity", "project", "document_ocr"],
+        "description": "识别甲方、采购、设计院、总包、决策人和技术推动者等关系角色。",
+        "autoAcceptThreshold": 65,
+    },
+    {
+        "code": "opportunity.growth_direction",
+        "factCode": "growth_direction",
+        "name": "从业务类型和产品线识别增长方向",
+        "sources": ["opportunity", "project", "document_ocr"],
+        "description": "根据商机业务类型和OCR识别产品线归纳客户潜在增长方向。",
+        "autoAcceptThreshold": 70,
+    },
+    {
+        "code": "opportunity.strategic_importance",
+        "factCode": "strategic_importance",
+        "name": "从商机规模识别战略重要性",
+        "sources": ["opportunity"],
+        "description": "根据客户关联商机金额和项目储备估计客户战略重要性。",
+        "autoAcceptThreshold": 80,
+    },
+    {
+        "code": "document.competitor_pattern",
+        "factCode": "competitor_pattern",
+        "name": "从文档和沟通文本识别竞品",
+        "sources": ["visit_record", "action", "opportunity", "document_ocr"],
+        "description": "识别文本中出现的竞品品牌或竞品描述，并保留原始来源。",
+        "autoAcceptThreshold": 75,
+    },
+    {
+        "code": "opportunity.customer_risk",
+        "factCode": "customer_risk",
+        "name": "从风险字段和行动描述识别客户风险",
+        "sources": ["visit_record", "action", "opportunity", "document_ocr"],
+        "description": "提取商机风险、供应商准入、决策链缺口和信息不完整等风险信号。",
+        "autoAcceptThreshold": 70,
+    },
+]
+
+def _json_value(value, fallback=None):
+    if value in (None, ""):
+        return fallback
+    if isinstance(value, (dict, list, int, float, bool)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return fallback if fallback is not None else value
+
+def _contains_any(text, keywords):
+    text = str(text or "")
+    return [keyword for keyword in keywords if keyword in text]
+
+def _fact_definition(fact_code):
+    for code, name, category, value_type in PROFILE_FACT_DEFINITIONS:
+        if code == fact_code:
+            return {"code": code, "name": name, "category": category, "valueType": value_type}
+    return {"code": fact_code, "name": fact_code, "category": "general", "valueType": "text"}
+
+def _extraction_source(source_type, source_object_type, source_object_id, customer_id, text, observed_at, confidence=60, metadata=None):
+    return {
+        "sourceType": source_type,
+        "sourceObjectType": source_object_type,
+        "sourceObjectId": str(source_object_id),
+        "customerId": customer_id,
+        "text": str(text or "")[:2000],
+        "observedAt": observed_at,
+        "confidence": int(max(0, min(100, confidence))),
+        "metadata": metadata or {},
+    }
+
+def collect_customer_fact_sources(db, customer_id, source_types):
+    sources = []
+    if "visit_record" in source_types:
+        for row in db.execute(
+            """SELECT be.id, be.event_type, be.message, be.created_at,
+                      o.name AS opportunity_name, o.customer_id, o.project_id
+               FROM business_events be
+               JOIN opportunities o ON o.id = be.opportunity_id
+               WHERE o.customer_id = ?
+               ORDER BY be.created_at DESC""",
+            (customer_id,),
+        ).fetchall():
+            sources.append(_extraction_source(
+                "visit_record", "business_event", row["id"], customer_id,
+                f"{row['event_type']} {row['message']} 商机：{row['opportunity_name']}",
+                row["created_at"], 62, {"projectId": row["project_id"]},
+            ))
+    if "action" in source_types:
+        for row in db.execute(
+            """SELECT a.*, COALESCE(a.customer_id, o.customer_id, p.customer_id, cd.customer_id) AS resolved_customer_id
+               FROM actions a
+               LEFT JOIN opportunities o ON o.id = a.opportunity_id
+               LEFT JOIN projects p ON p.id = a.project_id
+               LEFT JOIN customer_developments cd ON cd.id = a.customer_development_id
+               WHERE COALESCE(a.customer_id, o.customer_id, p.customer_id, cd.customer_id) = ?
+               ORDER BY a.updated_at DESC""",
+            (customer_id,),
+        ).fetchall():
+            sources.append(_extraction_source(
+                "action", "action", row["id"], customer_id,
+                f"任务：{row['title']} 描述：{row['description']} 阶段：{row['stage_name'] or row['stage_code']}",
+                row["updated_at"], 58, {"status": row["status"], "priority": row["priority"]},
+            ))
+    if "person" in source_types:
+        for row in db.execute(
+            """SELECT p.id, p.name, p.organization, p.title, p.person_type, p.notes,
+                      cp.role AS customer_role, cp.is_primary, p.updated_at
+               FROM persons p
+               JOIN customer_persons cp ON cp.person_id = p.id
+               WHERE cp.customer_id = ?
+               ORDER BY p.updated_at DESC, p.id DESC""",
+            (customer_id,),
+        ).fetchall():
+            sources.append(_extraction_source(
+                "person", "person", row["id"], customer_id,
+                f"关键人：{row['name']} 组织：{row['organization']} 职位：{row['title']} 人员类型：{row['person_type']} 客户角色：{row['customer_role']} 备注：{row['notes']}",
+                row["updated_at"], 74,
+                {"role": row["customer_role"], "personType": row["person_type"], "isPrimary": row["is_primary"]},
+            ))
+    if "opportunity" in source_types:
+        for row in db.execute(
+            """SELECT o.*, p.name AS project_name, p.project_type, p.address
+               FROM opportunities o
+               LEFT JOIN projects p ON p.id = o.project_id
+               WHERE o.customer_id = ?
+               ORDER BY o.updated_at DESC""",
+            (customer_id,),
+        ).fetchall():
+            sources.append(_extraction_source(
+                "opportunity", "opportunity", row["id"], customer_id,
+                f"商机：{row['name']} 阶段：{row['stage']} 业务类型：{row['business_type']} 描述：{row['description']} 风险：{row['risk']} 下一步：{row['next_action']}",
+                row["updated_at"], 72, {"stage": row["stage"], "businessType": row["business_type"], "amount": row["amount"], "projectId": row["project_id"]},
+            ))
+    if "project" in source_types:
+        for row in db.execute(
+            """SELECT * FROM projects WHERE customer_id = ? ORDER BY updated_at DESC""",
+            (customer_id,),
+        ).fetchall():
+            sources.append(_extraction_source(
+                "project", "project", row["id"], customer_id,
+                f"项目：{row['name']} 类型：{row['project_type']} 地址：{row['address']} 状态：{row['status']}",
+                row["updated_at"], 70, {"projectType": row["project_type"], "status": row["status"]},
+            ))
+    if "document_ocr" in source_types:
+        for row in db.execute(
+            """SELECT pe.*, COALESCE(p.customer_id, o.customer_id) AS resolved_customer_id,
+                      p.name AS project_name, o.name AS opportunity_name
+               FROM project_evidence pe
+               LEFT JOIN projects p ON p.id = pe.project_id
+               LEFT JOIN opportunities o ON o.id = pe.opportunity_id
+               WHERE COALESCE(p.customer_id, o.customer_id) = ?
+               ORDER BY pe.created_at DESC""",
+            (customer_id,),
+        ).fetchall():
+            payload = _json_value(row["extracted_json"], {}) or {}
+            sources.append(_extraction_source(
+                "document_ocr", "project_evidence", row["id"], customer_id,
+                f"文件：{row['file_name']} 文本：{row['extracted_text']} OCR结果：{json.dumps(payload, ensure_ascii=False)}",
+                row["created_at"], int(float(row["confidence"] or 0) * 100),
+                {"fileName": row["file_name"], "mimeType": row["mime_type"], "reviewStatus": row["review_status"], "extracted": payload},
+            ))
+    return sources
+
+def extract_customer_fact_candidates(sources, customer_id):
+    candidates = []
+    fact_names = {item[0]: item[1] for item in PROFILE_FACT_DEFINITIONS}
+
+    def add(rule_code, fact_code, value, confidence, source, reason=""):
+        definition = _fact_definition(fact_code)
+        candidates.append({
+            "factCode": fact_code,
+            "factName": fact_names.get(fact_code, definition["name"]),
+            "category": definition["category"],
+            "valueType": definition["valueType"],
+            "value": value,
+            "confidence": int(max(0, min(100, confidence))),
+            "ruleCode": rule_code,
+            "sourceObjectType": source["sourceObjectType"],
+            "sourceObjectId": source["sourceObjectId"],
+            "sourceText": source["text"],
+            "observedAt": source["observedAt"],
+            "reason": reason,
+        })
+
+    role_keywords = ["甲方", "建设单位", "采购", "设计院", "总包", "经销商", "决策人", "技术推动者", "负责人"]
+    competitor_keywords = ["多乐士", "三棵树", "立邦", "竞品", "竞争品牌"]
+    for source in sources:
+        text = source["text"]
+        metadata = source["metadata"] or {}
+        roles = _contains_any(text, role_keywords)
+        if roles:
+            add(
+                "relationship.role_coverage", "relationship_coverage",
+                {"mentionedRoles": roles, "sourceType": source["sourceType"]},
+                max(65, source["confidence"]), source, "文本中识别到客户关系角色。",
+            )
+        competitors = _contains_any(text, competitor_keywords)
+        if competitors:
+            add(
+                "document.competitor_pattern", "competitor_pattern",
+                {"mentionedCompetitors": competitors}, max(68, source["confidence"]), source,
+                "文本中识别到竞品或竞争品牌。",
+            )
+        if _contains_any(text, ["招投标", "招标", "投标", "标书"]):
+            add("opportunity.purchase_mode", "purchase_mode", "招投标采购", max(72, source["confidence"]), source, "识别到招投标关键词。")
+        elif _contains_any(text, ["采购", "供应商准入", "采购流程"]):
+            add("opportunity.purchase_mode", "purchase_mode", "项目采购", max(68, source["confidence"]), source, "识别到采购或供应商准入关键词。")
+        cycle = re.search(r"(\d+)\s*(天|周|个月|月)", text)
+        if cycle:
+            add("conversation.decision_cycle", "decision_cycle", cycle.group(0), max(70, source["confidence"]), source, "从文本提取到明确时间周期。")
+        elif _contains_any(text, ["招投标", "招标", "投标"]):
+            add("conversation.decision_cycle", "decision_cycle", "按招投标节点推进", 68, source, "通过招投标节点推断决策周期。")
+        risk_terms = _contains_any(text, ["风险", "供应商准入", "决策链缺口", "信息不完整", "待补齐", "竞争激烈", "预算不明"])
+        if risk_terms:
+            add("opportunity.customer_risk", "customer_risk", {"signals": risk_terms, "source": text[:240]}, max(65, source["confidence"]), source, "识别到客户经营风险信号。")
+        if source["sourceType"] in {"opportunity", "project", "document_ocr"}:
+            project_terms = _contains_any(text, ["工程", "项目", "厂房", "园区", "施工", "建筑"])
+            project_type = metadata.get("projectType") or metadata.get("businessType")
+            if project_terms or project_type:
+                add("opportunity.business_model", "business_model", "工程项目型客户", max(70, source["confidence"]), source, "从项目型业务描述识别业务模式。")
+        if source["sourceType"] == "opportunity":
+            business_type = metadata.get("businessType")
+            if business_type:
+                add("opportunity.growth_direction", "growth_direction", f"重点拓展{business_type}", 72, source, "根据商机业务类型归纳增长方向。")
+            amount = float(metadata.get("amount") or 0)
+            if amount >= 1000000:
+                add("opportunity.strategic_importance", "strategic_importance", "高", 82, source, "关联商机金额达到重点项目阈值。")
+        if source["sourceType"] == "document_ocr":
+            extracted = metadata.get("extracted") or {}
+            product_lines = extracted.get("productLines") or []
+            if product_lines:
+                add("opportunity.growth_direction", "growth_direction", f"重点拓展{'、'.join(map(str, product_lines))}", max(68, source["confidence"]), source, "从OCR结构化结果识别产品线方向。")
+                add("opportunity.business_model", "business_model", "工程项目型客户", max(68, source["confidence"]), source, "OCR识别到工程项目证据。")
+    return candidates
+
+def get_customer_fact_extraction_run(db, run_id):
+    row = db.execute(
+        """SELECT r.*, c.name AS customer_name
+           FROM customer_fact_extraction_runs r
+           JOIN customers c ON c.id = r.customer_id
+           WHERE r.id = ?""",
+        (run_id,),
+    ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["sourceTypes"] = _json_value(item.pop("source_types_json"), [])
+    item["dryRun"] = bool(item.pop("dry_run"))
+    item["candidates"] = []
+    for candidate in db.execute(
+        """SELECT * FROM customer_fact_extraction_candidates
+           WHERE run_id = ? ORDER BY confidence DESC, id""",
+        (run_id,),
+    ).fetchall():
+        candidate_item = dict(candidate)
+        candidate_item["value"] = _json_value(candidate_item.pop("value_json"), None)
+        item["candidates"].append(candidate_item)
+    return item
+
+def run_customer_fact_extraction(db, profile_id, source_types=None, dry_run=False, trigger_type="manual", now=None):
+    now = now or datetime.now(timezone.utc).isoformat()
+    profile = _profile_row(db, profile_id)
+    if not profile:
+        return None
+    requested = source_types or list(FACT_EXTRACTION_SOURCE_TYPES)
+    source_types = [item for item in requested if item in FACT_EXTRACTION_SOURCE_TYPES]
+    if not source_types:
+        raise ValueError("sourceTypes must contain at least one supported source")
+    agent = db.execute("SELECT id FROM agents WHERE id = 'customer-insight'").fetchone()
+    cur = db.execute(
+        """INSERT INTO customer_fact_extraction_runs
+           (customer_id, profile_id, trigger_type, source_types_json, rule_version, status, dry_run, started_at, created_at)
+           VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)""",
+        (profile["customer_id"], profile_id, trigger_type, json.dumps(source_types, ensure_ascii=False), "customer-fact-extraction-v1", int(bool(dry_run)), now, now),
+    )
+    run_id = cur.lastrowid
+    try:
+        sources = collect_customer_fact_sources(db, profile["customer_id"], source_types)
+        candidates = extract_customer_fact_candidates(sources, profile["customer_id"])
+        grouped = {}
+        for candidate in candidates:
+            grouped.setdefault(candidate["factCode"], []).append(candidate)
+        winners = {fact_code: max(rows, key=lambda item: (item["confidence"], item.get("observedAt") or "")) for fact_code, rows in grouped.items()}
+        accepted_count = 0
+        review_count = 0
+        evidence_ids = []
+        rule_thresholds = {rule["factCode"]: rule["autoAcceptThreshold"] for rule in CUSTOMER_FACT_EXTRACTION_RULES}
+        for candidate in candidates:
+            is_winner = winners.get(candidate["factCode"]) is candidate
+            threshold = rule_thresholds.get(candidate["factCode"], 70)
+            status = "preview" if dry_run else ("accepted" if is_winner and candidate["confidence"] >= threshold else ("needs_review" if is_winner else "supporting"))
+            candidate_cur = db.execute(
+                """INSERT INTO customer_fact_extraction_candidates
+                   (run_id, customer_id, profile_id, fact_code, fact_name, category, value_type,
+                    value_json, confidence, rule_code, source_object_type, source_object_id,
+                    source_text, observed_at, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run_id, profile["customer_id"], profile_id, candidate["factCode"], candidate["factName"], candidate["category"], candidate["valueType"], json.dumps(candidate["value"], ensure_ascii=False), candidate["confidence"], candidate["ruleCode"], candidate["sourceObjectType"], candidate["sourceObjectId"], candidate["sourceText"], candidate["observedAt"], status, now),
+            )
+            if status == "accepted":
+                accepted_count += 1
+                definition = _fact_definition(candidate["factCode"])
+                source_id = f"extraction:{run_id}:{candidate['sourceObjectType']}:{candidate['sourceObjectId']}"
+                db.execute(
+                    """INSERT INTO customer_profile_facts
+                       (profile_id, fact_code, fact_name, category, value_type, value_json, unit,
+                        confidence, source_type, source_id, observed_at, status, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, '', ?, 'fact_extraction', ?, ?, 'current', ?, ?)
+                       ON CONFLICT(profile_id, fact_code) DO UPDATE SET
+                         fact_name = excluded.fact_name, category = excluded.category,
+                         value_type = excluded.value_type, value_json = excluded.value_json,
+                         confidence = excluded.confidence, source_type = excluded.source_type,
+                         source_id = excluded.source_id, observed_at = excluded.observed_at,
+                         status = excluded.status, updated_at = excluded.updated_at""",
+                    (profile_id, candidate["factCode"], definition["name"], definition["category"], definition["valueType"], json.dumps(candidate["value"], ensure_ascii=False), candidate["confidence"], source_id, candidate["observedAt"], now, now),
+                )
+                fact_row = db.execute("SELECT id FROM customer_profile_facts WHERE profile_id = ? AND fact_code = ?", (profile_id, candidate["factCode"])).fetchone()
+                db.execute("UPDATE customer_fact_extraction_candidates SET applied_fact_id = ? WHERE id = ?", (fact_row["id"], candidate_cur.lastrowid))
+                evidence_cur = db.execute(
+                    """INSERT INTO customer_profile_evidences
+                       (profile_id, evidence_type, source_object_type, source_object_id,
+                        evidence_text, evidence_json, confidence, observed_at,
+                        extracted_by_agent_id, extracted_by_agent_run_id, created_at)
+                       VALUES (?, 'fact_extraction', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (profile_id, candidate["sourceObjectType"], candidate["sourceObjectId"], candidate["sourceText"], json.dumps({"factCode": candidate["factCode"], "ruleCode": candidate["ruleCode"], "extractionRunId": run_id, "reason": candidate["reason"]}, ensure_ascii=False), candidate["confidence"], candidate["observedAt"], agent["id"] if agent else None, None, now),
+                )
+                evidence_ids.append(evidence_cur.lastrowid)
+            elif status == "needs_review":
+                review_count += 1
+        agent_run_id = None
+        if agent:
+            agent_cur = db.execute(
+                """INSERT INTO agent_runs (agent_id, input_json, result, status, created_at)
+                   VALUES (?, ?, ?, 'completed', ?)""",
+                (agent["id"], json.dumps({"profileId": profile_id, "customerId": profile["customer_id"], "sourceTypes": source_types, "runId": run_id}, ensure_ascii=False), f"客户画像事实抽取完成：候选 {len(candidates)} 条，自动采纳 {accepted_count} 条，待复核 {review_count} 条。", now),
+            )
+            agent_run_id = agent_cur.lastrowid
+        if agent_run_id:
+            db.execute("UPDATE customer_fact_extraction_runs SET agent_run_id = ? WHERE id = ?", (agent_run_id, run_id))
+            for evidence_id in evidence_ids:
+                db.execute("UPDATE customer_profile_evidences SET extracted_by_agent_run_id = ? WHERE id = ?", (agent_run_id, evidence_id))
+        if not dry_run:
+            db.execute("UPDATE customer_profiles SET last_assessed_at = ?, updated_at = ? WHERE id = ?", (now, now, profile_id))
+        db.execute(
+            """UPDATE customer_fact_extraction_runs
+               SET status = ?, candidate_count = ?, accepted_count = ?, review_count = ?, completed_at = ?
+               WHERE id = ?""",
+            ("preview" if dry_run else "completed", len(candidates), accepted_count, review_count, now, run_id),
+        )
+        return get_customer_fact_extraction_run(db, run_id)
+    except Exception as error:
+        db.execute("UPDATE customer_fact_extraction_runs SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?", (str(error), now, run_id))
+        raise
+
+CUSTOMER_PROFILE_EVENT_TYPES = {
+    "project_created": "项目新增",
+    "opportunity_created": "商机创建",
+    "opportunity_stage_changed": "商机阶段变化",
+    "person_changed": "关键人变化",
+    "action_completed": "Action完成",
+}
+
+CUSTOMER_PROFILE_EVENT_SOURCE_TYPES = {
+    "project_created": ["project", "opportunity", "document_ocr"],
+    "opportunity_created": ["opportunity", "project", "document_ocr"],
+    "opportunity_stage_changed": ["visit_record", "action", "opportunity", "project", "person"],
+    "person_changed": ["person", "visit_record", "opportunity"],
+    "action_completed": ["action", "visit_record", "opportunity", "project", "person"],
+}
+
+def sync_customer_profile_relations(db, profile_id, customer_id, now):
+    """Keep the profile's read model links aligned with current customer objects."""
+    for row in db.execute("SELECT id FROM projects WHERE customer_id = ?", (customer_id,)).fetchall():
+        db.execute(
+            """INSERT OR IGNORE INTO customer_profile_projects
+               (profile_id, project_id, relation_type, importance, created_at, updated_at)
+               VALUES (?, ?, '客户关联项目', 60, ?, ?)""",
+            (profile_id, row["id"], now, now),
+        )
+    for row in db.execute("SELECT id FROM opportunities WHERE customer_id = ?", (customer_id,)).fetchall():
+        db.execute(
+            """INSERT OR IGNORE INTO customer_profile_opportunities
+               (profile_id, opportunity_id, relation_type, importance, created_at, updated_at)
+               VALUES (?, ?, '客户关联商机', 60, ?, ?)""",
+            (profile_id, row["id"], now, now),
+        )
+    person_rows = db.execute(
+        """SELECT DISTINCT p.id
+           FROM persons p
+           JOIN customer_persons cp ON cp.person_id = p.id
+           WHERE cp.customer_id = ?
+           UNION
+           SELECT DISTINCT p.id
+           FROM persons p
+           JOIN opportunity_persons op ON op.person_id = p.id
+           JOIN opportunities o ON o.id = op.opportunity_id
+           WHERE o.customer_id = ?""",
+        (customer_id, customer_id),
+    ).fetchall()
+    for row in person_rows:
+        db.execute(
+            """INSERT OR IGNORE INTO customer_profile_persons
+               (profile_id, person_id, relation_type, relationship_health, created_at, updated_at)
+               VALUES (?, ?, '客户关键关系', '待评估', ?, ?)""",
+            (profile_id, row["id"], now, now),
+        )
+
+def get_customer_profile_scoring_model(db, model_id=None, model_code=None, version_no=None, active_only=True):
+    clauses = []
+    values = []
+    if model_id:
+        clauses.append("id = ?")
+        values.append(model_id)
+    if model_code:
+        clauses.append("model_code = ?")
+        values.append(model_code)
+    if version_no:
+        clauses.append("version_no = ?")
+        values.append(version_no)
+    if active_only:
+        clauses.append("status = 'active'")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    order = "ORDER BY is_default DESC, published_at DESC, id DESC"
+    row = db.execute(f"SELECT * FROM customer_profile_scoring_models {where} {order} LIMIT 1", tuple(values)).fetchone()
+    if not row:
+        return None
+    model = dict(row)
+    model["isDefault"] = bool(model.pop("is_default"))
+    model["dimensions"] = []
+    dimensions = db.execute(
+        "SELECT * FROM customer_profile_scoring_dimensions WHERE model_id = ? ORDER BY sort_order, id",
+        (row["id"],),
+    ).fetchall()
+    for dimension in dimensions:
+        item = dict(dimension)
+        item["sourceFactCodes"] = _json_value(item.pop("source_fact_codes_json"), [])
+        item["sourceMetrics"] = _json_value(item.pop("source_metrics_json"), [])
+        item["config"] = _json_value(item.pop("config_json"), {})
+        item["enabled"] = bool(item["enabled"])
+        item["rules"] = []
+        rules = db.execute(
+            "SELECT * FROM customer_profile_scoring_rules WHERE model_id = ? AND dimension_id = ? ORDER BY priority, id",
+            (row["id"], dimension["id"]),
+        ).fetchall()
+        for rule in rules:
+            rule_item = dict(rule)
+            rule_item["condition"] = _json_value(rule_item.pop("condition_json"), {})
+            rule_item["config"] = _json_value(rule_item.pop("config_json"), {})
+            rule_item["enabled"] = bool(rule_item["enabled"])
+            item["rules"].append(rule_item)
+        model["dimensions"].append(item)
+    return model
+
+def _scoring_condition_matches(condition, metrics, facts):
+    if condition.get("factCode"):
+        fact_code = condition["factCode"]
+        if condition.get("operator") == "exists":
+            return (fact_code in facts) == bool(condition.get("value", True))
+        if fact_code not in facts:
+            return False
+        actual = facts[fact_code]
+    else:
+        metric = condition.get("metric")
+        if metric not in metrics:
+            return False
+        actual = metrics[metric]
+    expected = condition.get("value")
+    operator = condition.get("operator", "=")
+    try:
+        if operator == ">=":
+            return actual >= expected
+        if operator == ">":
+            return actual > expected
+        if operator == "<=":
+            return actual <= expected
+        if operator == "<":
+            return actual < expected
+        if operator in {"=", "=="}:
+            return actual == expected
+        if operator == "!=":
+            return actual != expected
+        if operator == "contains":
+            return expected in actual
+    except (TypeError, ValueError):
+        return False
+    return False
+
+def recalculate_customer_profile_scores(db, profile_id, now, source_agent_run_id=None, model_id=None, model_code=None, version_no=None):
+    profile = _profile_row(db, profile_id)
+    if not profile:
+        return []
+    model = get_customer_profile_scoring_model(db, model_id, model_code, version_no)
+    if not model:
+        seed_customer_profile_scoring_models(db, now)
+        model = get_customer_profile_scoring_model(db, model_id, model_code, version_no)
+    if not model:
+        raise ValueError("active customer profile scoring model not found")
+    customer_id = profile["customer_id"]
+    project_count = db.execute("SELECT COUNT(*) AS n FROM projects WHERE customer_id = ?", (customer_id,)).fetchone()["n"]
+    opportunity_rows = db.execute(
+        """SELECT amount, stage, risk FROM opportunities
+           WHERE customer_id = ? AND stage NOT IN ('失败', '结束')""",
+        (customer_id,),
+    ).fetchall()
+    person_rows = db.execute(
+        """SELECT DISTINCT p.id, COALESCE(cp.role, op.role, '') AS role
+           FROM persons p
+           LEFT JOIN customer_persons cp ON cp.person_id = p.id AND cp.customer_id = ?
+           LEFT JOIN opportunity_persons op ON op.person_id = p.id
+           LEFT JOIN opportunities o ON o.id = op.opportunity_id AND o.customer_id = ?
+           WHERE cp.person_id IS NOT NULL OR o.id IS NOT NULL""",
+        (customer_id, customer_id),
+    ).fetchall()
+    roles = {str(row["role"] or "").strip() for row in person_rows if str(row["role"] or "").strip()}
+    facts = db.execute(
+        "SELECT fact_code, category, value_json FROM customer_profile_facts WHERE profile_id = ? AND status = 'current'",
+        (profile_id,),
+    ).fetchall()
+    fact_map = {row["fact_code"]: _json_value(row["value_json"], None) for row in facts}
+    risk_fact_count = sum(1 for row in facts if row["category"] == "risk")
+    active_amount = sum(float(row["amount"] or 0) for row in opportunity_rows)
+    risk_text = " ".join(str(row["risk"] or "") for row in opportunity_rows)
+    metrics = {
+        "projectCount": project_count,
+        "opportunityCount": len(opportunity_rows),
+        "activeOpportunityAmount": active_amount,
+        "personCount": len(person_rows),
+        "roleCount": len(roles),
+        "riskFactCount": risk_fact_count,
+        "hasGrowthDirection": bool(fact_map.get("growth_direction")),
+        "activeRiskSignal": _contains_any(risk_text, ["风险", "待完善", "竞争", "供应商准入"]),
+        "strategicImportanceHigh": fact_map.get("strategic_importance") == "高",
+    }
+    dimension_scores = {}
+    score_details = {}
+    for dimension in model["dimensions"]:
+        if not dimension["enabled"]:
+            continue
+        if dimension["calculation_type"] == "weighted_average":
+            continue
+        matched_rules = [rule for rule in dimension["rules"] if rule["enabled"] and _scoring_condition_matches(rule["condition"], metrics, fact_map)]
+        raw_score = sum(float(rule["score"]) for rule in matched_rules)
+        score = int(max(dimension["score_min"], min(dimension["score_max"], round(raw_score))))
+        dimension_scores[dimension["dimension_code"]] = score
+        score_details[dimension["dimension_code"]] = {
+            "matchedRules": [rule["rule_code"] for rule in matched_rules],
+            "explanations": [rule["explanation"] for rule in matched_rules],
+        }
+    scores = []
+    for dimension in model["dimensions"]:
+        if not dimension["enabled"]:
+            continue
+        code = dimension["dimension_code"]
+        if dimension["calculation_type"] == "weighted_average":
+            config = dimension["config"] or {}
+            source_codes = config.get("sourceDimensions") or [item["dimension_code"] for item in model["dimensions"] if item["calculation_type"] != "weighted_average" and item["enabled"]]
+            inverse_codes = set(config.get("inverseDimensions") or (["customer_risk"] if code == "customer_value" else []))
+            source_dimensions = {item["dimension_code"]: item for item in model["dimensions"]}
+            total_weight = sum(float(source_dimensions[item]["weight"]) for item in source_codes if item in source_dimensions)
+            weighted_score = 0
+            if total_weight:
+                weighted_score = sum(
+                    (100 - dimension_scores[item] if item in inverse_codes else dimension_scores.get(item, 0)) * float(source_dimensions[item]["weight"])
+                    for item in source_codes if item in source_dimensions
+                ) / total_weight
+            score = int(max(dimension["score_min"], min(dimension["score_max"], round(weighted_score))))
+            reason = f"按评分模型 {model['model_code']} {model['version_no']} 的维度权重汇总。"
+            score_details[code] = {"sourceDimensions": source_codes, "inverseDimensions": list(inverse_codes), "totalWeight": total_weight}
+        else:
+            score = dimension_scores.get(code, 0)
+            reason = "；".join(score_details.get(code, {}).get("explanations", [])) or f"按评分模型 {model['model_code']} {model['version_no']} 的配置规则计算。"
+        scores.append((code, score, reason))
+    dimensions_payload = {"metrics": metrics, "dimensions": score_details, "modelId": model["id"], "modelCode": model["model_code"], "modelVersion": model["version_no"]}
+    agent = db.execute("SELECT id FROM agents WHERE id = 'customer-insight'").fetchone()
+    scoring_rule_version = f"{model['model_code']}-{model['version_no']}"
+    for score_type, score, reason in scores:
+        db.execute(
+            """INSERT INTO customer_profile_scores
+               (profile_id, score_type, score, level, dimensions_json, scoring_rule_version,
+                reason, source_agent_id, source_agent_run_id, assessed_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(profile_id, score_type, assessed_at) DO UPDATE SET
+                 score = excluded.score, level = excluded.level,
+                 dimensions_json = excluded.dimensions_json,
+                 scoring_rule_version = excluded.scoring_rule_version,
+                 reason = excluded.reason, source_agent_id = excluded.source_agent_id,
+                 source_agent_run_id = excluded.source_agent_run_id""",
+            (profile_id, score_type, int(max(0, min(100, score))), profile_score_level(score), json.dumps(dimensions_payload, ensure_ascii=False), scoring_rule_version, reason, agent["id"] if agent else None, source_agent_run_id, now, now),
+        )
+    db.execute(
+        "UPDATE customer_profiles SET last_assessed_at = ?, updated_at = ?, source_agent_id = COALESCE(?, source_agent_id), source_agent_run_id = COALESCE(?, source_agent_run_id) WHERE id = ?",
+        (now, now, agent["id"] if agent else None, source_agent_run_id, profile_id),
+    )
+    return [{"scoreType": score_type, "score": int(max(0, min(100, score))), "level": profile_score_level(score), "modelId": model["id"], "modelCode": model["model_code"], "modelVersion": model["version_no"]} for score_type, score, _ in scores]
+
+def get_customer_profile_event(db, event_id):
+    row = db.execute(
+        """SELECT e.*, c.name AS customer_name
+           FROM customer_profile_events e
+           JOIN customers c ON c.id = e.customer_id
+           WHERE e.id = ?""",
+        (event_id,),
+    ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["eventName"] = CUSTOMER_PROFILE_EVENT_TYPES.get(item["event_type"], item["event_type"])
+    item["payload"] = _json_value(item.pop("payload_json"), {})
+    return item
+
+def process_customer_profile_event(db, event_id, now=None, force=False):
+    now = now or datetime.now(timezone.utc).isoformat()
+    event = db.execute("SELECT * FROM customer_profile_events WHERE id = ?", (event_id,)).fetchone()
+    if not event:
+        return None
+    if event["status"] == "completed" and not force:
+        return get_customer_profile_event(db, event_id)
+    if event["status"] == "skipped" and not force:
+        return get_customer_profile_event(db, event_id)
+    db.execute(
+        "UPDATE customer_profile_events SET status = 'processing', attempts = attempts + 1, error_message = '' WHERE id = ?",
+        (event_id,),
+    )
+    try:
+        profile_id = event["profile_id"]
+        if not profile_id:
+            profile = get_current_customer_profile(db, event["customer_id"])
+            profile_id = profile["id"] if profile else None
+        if not profile_id:
+            db.execute(
+                "UPDATE customer_profile_events SET status = 'skipped', error_message = 'customer profile not found', processed_at = ? WHERE id = ?",
+                (now, event_id),
+            )
+            return get_customer_profile_event(db, event_id)
+        source_types = CUSTOMER_PROFILE_EVENT_SOURCE_TYPES.get(event["event_type"], list(FACT_EXTRACTION_SOURCE_TYPES))
+        extraction = run_customer_fact_extraction(
+            db,
+            profile_id,
+            source_types=source_types,
+            dry_run=False,
+            trigger_type=f"event:{event['event_type']}",
+            now=now,
+        )
+        sync_customer_profile_relations(db, profile_id, event["customer_id"], now)
+        scores = recalculate_customer_profile_scores(db, profile_id, now, extraction.get("agent_run_id"))
+        db.execute(
+            "UPDATE customer_profile_summaries SET status = 'stale', updated_at = ? WHERE profile_id = ? AND status = 'published'",
+            (now, profile_id),
+        )
+        db.execute(
+            """UPDATE customer_profile_events
+               SET profile_id = ?, status = 'completed', fact_extraction_run_id = ?,
+                   agent_run_id = ?, processed_at = ?, error_message = ''
+               WHERE id = ?""",
+            (profile_id, extraction["id"], extraction.get("agent_run_id"), now, event_id),
+        )
+        result = get_customer_profile_event(db, event_id)
+        result["scores"] = scores
+        result["summaryStatus"] = "stale"
+        return result
+    except Exception as error:
+        db.execute(
+            "UPDATE customer_profile_events SET status = 'failed', error_message = ?, processed_at = ? WHERE id = ?",
+            (str(error), now, event_id),
+        )
+        return get_customer_profile_event(db, event_id)
+
+def emit_customer_profile_event(db, event_type, customer_id, source_object_type, source_object_id, payload=None, now=None, process=True, dedupe_key=None):
+    now = now or datetime.now(timezone.utc).isoformat()
+    if event_type not in CUSTOMER_PROFILE_EVENT_TYPES:
+        raise ValueError("unsupported customer profile event type")
+    customer = db.execute("SELECT id FROM customers WHERE id = ?", (customer_id,)).fetchone()
+    if not customer:
+        raise ValueError("customer not found")
+    profile = get_current_customer_profile(db, customer_id)
+    dedupe_key = dedupe_key or f"{event_type}:{source_object_type}:{source_object_id}"
+    existing = db.execute("SELECT id FROM customer_profile_events WHERE dedupe_key = ?", (dedupe_key,)).fetchone()
+    if existing:
+        return get_customer_profile_event(db, existing["id"])
+    cur = db.execute(
+        """INSERT INTO customer_profile_events
+           (customer_id, profile_id, event_type, source_object_type, source_object_id,
+            payload_json, status, occurred_at, created_at, dedupe_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (customer_id, profile["id"] if profile else None, event_type, source_object_type, str(source_object_id), json.dumps(payload or {}, ensure_ascii=False), "pending" if profile else "skipped", now, now, dedupe_key),
+    )
+    event_id = cur.lastrowid
+    if not profile:
+        db.execute("UPDATE customer_profile_events SET error_message = 'customer profile not found', processed_at = ? WHERE id = ?", (now, event_id))
+        return get_customer_profile_event(db, event_id)
+    return process_customer_profile_event(db, event_id, now=now) if process else get_customer_profile_event(db, event_id)
+
+def _profile_row(db, profile_id):
+    return db.execute(
+        """SELECT cp.*, c.name AS customer_name, c.customer_type, c.industry,
+                  co.name AS customer_organization_name
+           FROM customer_profiles cp
+           JOIN customers c ON c.id = cp.customer_id
+           LEFT JOIN customer_organizations co ON co.id = cp.customer_organization_id
+           WHERE cp.id = ?""",
+        (profile_id,),
+    ).fetchone()
+
+def get_customer_profile(db, profile_id):
+    row = _profile_row(db, profile_id)
+    if not row:
+        return None
+    item = dict(row)
+    item["facts"] = []
+    for fact in db.execute(
+        """SELECT * FROM customer_profile_facts
+           WHERE profile_id = ? ORDER BY category, fact_name, id""",
+        (profile_id,),
+    ).fetchall():
+        fact_item = dict(fact)
+        fact_item["value"] = json.loads(fact_item.pop("value_json") or "null")
+        item["facts"].append(fact_item)
+    item["scores"] = []
+    for score in db.execute(
+        """SELECT cps.*, a.name AS source_agent_name
+           FROM customer_profile_scores cps
+           LEFT JOIN agents a ON a.id = cps.source_agent_id
+           WHERE cps.profile_id = ?
+           ORDER BY cps.assessed_at DESC, cps.id DESC""",
+        (profile_id,),
+    ).fetchall():
+        score_item = dict(score)
+        score_item["dimensions"] = json.loads(score_item.pop("dimensions_json") or "{}")
+        item["scores"].append(score_item)
+    item["summaries"] = []
+    for summary in db.execute(
+        """SELECT cps.*, a.name AS generated_by_agent_name
+           FROM customer_profile_summaries cps
+           LEFT JOIN agents a ON a.id = cps.generated_by_agent_id
+           WHERE cps.profile_id = ?
+           ORDER BY cps.updated_at DESC, cps.id DESC""",
+        (profile_id,),
+    ).fetchall():
+        summary_item = dict(summary)
+        summary_item["structured"] = json.loads(summary_item.pop("structured_json") or "{}")
+        item["summaries"].append(summary_item)
+    item["evidences"] = []
+    for evidence in db.execute(
+        """SELECT cpe.*, a.name AS extracted_by_agent_name
+           FROM customer_profile_evidences cpe
+           LEFT JOIN agents a ON a.id = cpe.extracted_by_agent_id
+           WHERE cpe.profile_id = ? ORDER BY cpe.observed_at DESC, cpe.id DESC""",
+        (profile_id,),
+    ).fetchall():
+        evidence_item = dict(evidence)
+        evidence_item["evidence"] = json.loads(evidence_item.pop("evidence_json") or "{}")
+        item["evidences"].append(evidence_item)
+    item["projects"] = [dict(x) for x in db.execute(
+        """SELECT cpp.*, p.name, p.project_type, p.address, p.status,
+                         co.name AS customer_organization_name
+           FROM customer_profile_projects cpp
+           JOIN projects p ON p.id = cpp.project_id
+           LEFT JOIN customer_organizations co ON co.id = p.customer_organization_id
+           WHERE cpp.profile_id = ? ORDER BY cpp.importance DESC, cpp.id DESC""",
+        (profile_id,),
+    ).fetchall()]
+    item["opportunities"] = [dict(x) for x in db.execute(
+        """SELECT cpo.*, o.name, o.stage, o.amount, o.business_type, o.owner,
+                         p.name AS project_name
+           FROM customer_profile_opportunities cpo
+           JOIN opportunities o ON o.id = cpo.opportunity_id
+           LEFT JOIN projects p ON p.id = o.project_id
+           WHERE cpo.profile_id = ? ORDER BY cpo.importance DESC, cpo.id DESC""",
+        (profile_id,),
+    ).fetchall()]
+    item["persons"] = [dict(x) for x in db.execute(
+        """SELECT cpp.*, p.name, p.organization, p.title, p.person_type
+           FROM customer_profile_persons cpp
+           JOIN persons p ON p.id = cpp.person_id
+           WHERE cpp.profile_id = ? ORDER BY cpp.id DESC""",
+        (profile_id,),
+    ).fetchall()]
+    item["developments"] = [dict(x) for x in db.execute(
+        """SELECT cpd.*, cd.name, cd.current_stage_code, cd.current_stage_name,
+                         cd.status, cd.owner
+           FROM customer_profile_developments cpd
+           JOIN customer_developments cd ON cd.id = cpd.customer_development_id
+           WHERE cpd.profile_id = ? ORDER BY cpd.id DESC""",
+        (profile_id,),
+    ).fetchall()]
+    return item
+
+def get_current_customer_profile(db, customer_id, customer_organization_id=None):
+    if customer_organization_id:
+        row = db.execute(
+            """SELECT id FROM customer_profiles
+               WHERE customer_id = ? AND customer_organization_id = ? AND status = 'active'
+               ORDER BY version_no DESC, id DESC LIMIT 1""",
+            (customer_id, customer_organization_id),
+        ).fetchone()
+    else:
+        row = db.execute(
+            """SELECT id FROM customer_profiles
+               WHERE customer_id = ? AND status = 'active'
+               ORDER BY version_no DESC, id DESC LIMIT 1""",
+            (customer_id,),
+        ).fetchone()
+    return get_customer_profile(db, row["id"]) if row else None
+
+def get_customer_profile_context(db, profile_id):
+    profile = get_customer_profile(db, profile_id)
+    if not profile:
+        return None
+    return {
+        "profile": profile,
+        "customer": {
+            "id": profile["customer_id"],
+            "name": profile["customer_name"],
+            "type": profile["customer_type"],
+            "industry": profile["industry"],
+        },
+        "facts": profile["facts"],
+        "scores": profile["scores"],
+        "summaries": profile["summaries"],
+        "evidence": profile["evidences"],
+        "relatedObjects": {
+            "projects": profile["projects"],
+            "opportunities": profile["opportunities"],
+            "persons": profile["persons"],
+            "customerDevelopments": profile["developments"],
+        },
+    }
+
+def profile_score_level(score):
+    if score >= 80:
+        return "A"
+    if score >= 60:
+        return "B"
+    if score >= 40:
+        return "C"
+    return "D"
+
+def generate_customer_profile_summary(db, profile_id, now):
+    profile = get_customer_profile(db, profile_id)
+    if not profile:
+        return None
+    scores = {x["score_type"]: x for x in profile["scores"]}
+    value_level = scores.get("customer_value", {}).get("level") or "待评估"
+    relationship_score = scores.get("relationship_coverage", {}).get("score")
+    growth_score = scores.get("growth_potential", {}).get("score")
+    risks = [x for x in profile["facts"] if x["category"] == "risk"]
+    summary = (
+        f"{profile['customer_name']}是{profile['industry']}行业客户，当前客户价值等级为{value_level}。"
+        f"已关联{len(profile['projects'])}个项目、{len(profile['opportunities'])}个商机和{len(profile['persons'])}位关键人。"
+    )
+    if relationship_score is not None:
+        summary += f"关系覆盖评分为{relationship_score}分。"
+    if growth_score is not None:
+        summary += f"客户增长潜力评分为{growth_score}分。"
+    if risks:
+        summary += "当前需要关注：" + "、".join(x["fact_name"] for x in risks) + "。"
+    else:
+        summary += "当前暂无已记录的主要经营风险。"
+    structured = {
+        "customerValueLevel": value_level,
+        "projectCount": len(profile["projects"]),
+        "opportunityCount": len(profile["opportunities"]),
+        "personCount": len(profile["persons"]),
+        "relationshipScore": relationship_score,
+        "growthScore": growth_score,
+        "riskFacts": [x["fact_code"] for x in risks],
+        "generatedAt": now,
+    }
+    agent = db.execute("SELECT id FROM agents WHERE id = 'customer-insight'").fetchone()
+    run_id = None
+    if agent:
+        run = db.execute(
+            """INSERT INTO agent_runs
+               (agent_id, input_json, result, status, created_at)
+               VALUES (?, ?, ?, 'completed', ?)""",
+            (
+                agent["id"],
+                json.dumps({"profileId": profile_id, "purpose": "customer_profile_summary"}, ensure_ascii=False),
+                summary,
+                now,
+            ),
+        )
+        run_id = run.lastrowid
+    db.execute(
+        """INSERT INTO customer_profile_summaries
+           (profile_id, summary_type, title, content, structured_json,
+            generated_by_agent_id, generated_by_agent_run_id, model_name,
+            prompt_version, status, created_at, updated_at)
+           VALUES (?, 'executive_summary', ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)""",
+        (
+            profile_id,
+            "AI客户摘要",
+            summary,
+            json.dumps(structured, ensure_ascii=False),
+            agent["id"] if agent else None,
+            run_id,
+            "rule-based-mvp",
+            "customer-profile-v1",
+            now,
+            now,
+        ),
+    )
+    db.execute(
+        "UPDATE customer_profiles SET last_assessed_at = ?, updated_at = ? WHERE id = ?",
+        (now, now, profile_id),
+    )
+    return get_customer_profile(db, profile_id)
+
+def seed_customer_profiles(db, now):
+    if db.execute("SELECT COUNT(*) FROM customer_profiles").fetchone()[0]:
+        return
+    customer = db.execute("SELECT * FROM customers ORDER BY id LIMIT 1").fetchone()
+    if not customer:
+        return
+    organization = db.execute(
+        """SELECT id FROM customer_organizations
+           WHERE customer_id = ? ORDER BY parent_id IS NOT NULL, id LIMIT 1""",
+        (customer["id"],),
+    ).fetchone()
+    agent = db.execute("SELECT id FROM agents WHERE id = 'customer-insight'").fetchone()
+    cur = db.execute(
+        """INSERT INTO customer_profiles
+           (customer_id, customer_organization_id, profile_type, version_no,
+            scope_type, status, completeness_score, confidence_score,
+            source_agent_id, created_at, updated_at)
+           VALUES (?, ?, 'baseline', 1, 'customer', 'active', 72, 78, ?, ?, ?)""",
+        (customer["id"], organization["id"] if organization else None, agent["id"] if agent else None, now, now),
+    )
+    profile_id = cur.lastrowid
+    facts = [
+        ("business_model", "业务模式", "business_model", "text", "工程项目型客户"),
+        ("strategic_importance", "战略重要性", "customer_value", "enum", "高"),
+        ("purchase_mode", "采购模式", "purchase_behavior", "enum", "项目采购"),
+        ("relationship_coverage", "关系覆盖情况", "relationship", "json", {"采购": 60, "设计": 55, "决策层": 45}),
+        ("customer_risk", "客户经营风险", "risk", "json", {"code": "decision_chain_gap", "label": "决策链覆盖不足"}),
+    ]
+    for code, name, category, value_type, value in facts:
+        db.execute(
+            """INSERT INTO customer_profile_facts
+               (profile_id, fact_code, fact_name, category, value_type, value_json,
+                confidence, source_type, observed_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'baseline', ?, ?, ?)""",
+            (profile_id, code, name, category, value_type, json.dumps(value, ensure_ascii=False), 78, now, now, now),
+        )
+    for score_type, score, reason in [
+        ("customer_value", 82, "战略重要性高，存在持续工程项目入口"),
+        ("growth_potential", 76, "已存在多个项目和商机，可扩展产品线"),
+        ("relationship_coverage", 58, "采购、设计和决策层关系仍需补齐"),
+        ("project_potential", 80, "客户关联项目储备较充足"),
+        ("customer_risk", 42, "决策链不完整，存在供应商准入风险"),
+    ]:
+        db.execute(
+            """INSERT INTO customer_profile_scores
+               (profile_id, score_type, score, level, reason, assessed_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (profile_id, score_type, score, profile_score_level(score), reason, now, now),
+        )
+    development = db.execute(
+        "SELECT id FROM customer_developments WHERE customer_id = ? ORDER BY id LIMIT 1",
+        (customer["id"],),
+    ).fetchone()
+    if development:
+        db.execute(
+            """INSERT OR IGNORE INTO customer_profile_developments
+               (profile_id, customer_development_id, relevance_score, created_at, updated_at)
+               VALUES (?, ?, 90, ?, ?)""",
+            (profile_id, development["id"], now, now),
+        )
+    for row in db.execute("SELECT id FROM projects WHERE customer_id = ? ORDER BY id LIMIT 3", (customer["id"],)).fetchall():
+        db.execute(
+            """INSERT OR IGNORE INTO customer_profile_projects
+               (profile_id, project_id, relation_type, importance, created_at, updated_at)
+               VALUES (?, ?, '重点项目', 80, ?, ?)""",
+            (profile_id, row["id"], now, now),
+        )
+    for row in db.execute("SELECT id FROM opportunities WHERE customer_id = ? ORDER BY id LIMIT 3", (customer["id"],)).fetchall():
+        db.execute(
+            """INSERT OR IGNORE INTO customer_profile_opportunities
+               (profile_id, opportunity_id, relation_type, importance, created_at, updated_at)
+               VALUES (?, ?, '重点商机', 80, ?, ?)""",
+            (profile_id, row["id"], now, now),
+        )
+    for row in db.execute(
+        """SELECT p.id
+           FROM persons p
+           JOIN customer_persons cp ON cp.person_id = p.id
+           WHERE cp.customer_id = ?
+           ORDER BY p.id LIMIT 5""",
+        (customer["id"],),
+    ).fetchall():
+        db.execute(
+            """INSERT OR IGNORE INTO customer_profile_persons
+               (profile_id, person_id, relation_type, relationship_health, created_at, updated_at)
+               VALUES (?, ?, '关键关系', '待评估', ?, ?)""",
+            (profile_id, row["id"], now, now),
+        )
+    generate_customer_profile_summary(db, profile_id, now)
+
+def seed_customer_profile_scoring_models(db, now):
+    if db.execute("SELECT COUNT(*) FROM customer_profile_scoring_models").fetchone()[0]:
+        return
+    cur = db.execute(
+        """INSERT INTO customer_profile_scoring_models
+           (model_code, name, version_no, status, target_scope, description, is_default, created_at, updated_at, published_at)
+           VALUES ('customer-profile', '客户画像评分模型', '2.0', 'active', 'customer_profile', ?, 1, ?, ?, ?)""",
+        ("支持客户价值、增长潜力、关系覆盖、项目潜力和风险评分的可配置版本。", now, now, now),
+    )
+    model_id = cur.lastrowid
+    dimensions = [
+        ("relationship_coverage", "关系覆盖评分", "rules", 25, ["relationship_coverage"], ["personCount", "roleCount"]),
+        ("growth_potential", "增长潜力评分", "rules", 30, ["growth_direction", "business_model"], ["projectCount", "opportunityCount", "activeOpportunityAmount", "hasGrowthDirection"]),
+        ("project_potential", "项目潜力评分", "rules", 25, ["business_model", "strategic_importance"], ["projectCount", "opportunityCount"]),
+        ("customer_risk", "风险评分", "rules", 20, ["customer_risk"], ["riskFactCount", "activeRiskSignal"]),
+        ("customer_value", "客户价值评分", "weighted_average", 0, ["strategic_importance"], ["relationship_coverage", "growth_potential", "project_potential", "customer_risk"]),
+    ]
+    dimension_ids = {}
+    for order, (code, name, calculation_type, weight, fact_codes, metrics) in enumerate(dimensions, 1):
+        dimension_cur = db.execute(
+            """INSERT INTO customer_profile_scoring_dimensions
+               (model_id, dimension_code, name, calculation_type, weight, source_fact_codes_json,
+                source_metrics_json, sort_order, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (model_id, code, name, calculation_type, weight, json.dumps(fact_codes, ensure_ascii=False), json.dumps(metrics, ensure_ascii=False), order, now, now),
+        )
+        dimension_ids[code] = dimension_cur.lastrowid
+    rules = [
+        ("relationship.person", "关键人覆盖", "relationship_coverage", {"metric": "personCount", "operator": ">=", "value": 1}, 25, 10, "至少识别到1位关键人。"),
+        ("relationship.role", "业务角色覆盖", "relationship_coverage", {"metric": "roleCount", "operator": ">=", "value": 1}, 25, 20, "至少识别到1类业务角色。"),
+        ("relationship.role_depth", "多角色覆盖", "relationship_coverage", {"metric": "roleCount", "operator": ">=", "value": 3}, 25, 30, "已覆盖3类及以上业务角色。"),
+        ("growth.project", "项目储备", "growth_potential", {"metric": "projectCount", "operator": ">=", "value": 1}, 20, 10, "客户存在关联项目。"),
+        ("growth.opportunity", "在途商机", "growth_potential", {"metric": "opportunityCount", "operator": ">=", "value": 1}, 25, 20, "客户存在在途商机。"),
+        ("growth.amount", "商机规模", "growth_potential", {"metric": "activeOpportunityAmount", "operator": ">=", "value": 1000000}, 30, 30, "在途商机金额达到重点规模。"),
+        ("growth.direction", "增长方向", "growth_potential", {"metric": "hasGrowthDirection", "operator": "=", "value": True}, 25, 40, "已识别客户增长方向。"),
+        ("project.project", "项目数量", "project_potential", {"metric": "projectCount", "operator": ">=", "value": 1}, 40, 10, "客户存在项目储备。"),
+        ("project.opportunity", "项目商机", "project_potential", {"metric": "opportunityCount", "operator": ">=", "value": 1}, 30, 20, "客户存在项目型商机。"),
+        ("project.scale", "多项目储备", "project_potential", {"metric": "opportunityCount", "operator": ">=", "value": 3}, 30, 30, "客户存在多个在途商机。"),
+        ("risk.fact", "风险事实", "customer_risk", {"metric": "riskFactCount", "operator": ">=", "value": 1}, 40, 10, "画像中存在客户风险事实。"),
+        ("risk.signal", "商机风险信号", "customer_risk", {"metric": "activeRiskSignal", "operator": "=", "value": True}, 35, 20, "在途商机存在风险描述。"),
+    ]
+    for code, name, dimension_code, condition, score, priority, explanation in rules:
+        db.execute(
+            """INSERT INTO customer_profile_scoring_rules
+               (model_id, dimension_id, rule_code, name, condition_json, score, priority, explanation, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (model_id, dimension_ids[dimension_code], code, name, json.dumps(condition, ensure_ascii=False), score, priority, explanation, now, now),
+        )
+
+RELATIONSHIP_ENTITY_TYPES = {"Customer", "Organization", "Person", "Project", "Opportunity", "Agent"}
+
+def relationship_score_level(score):
+    score = int(score or 0)
+    if score >= 80:
+        return "强关系"
+    if score >= 50:
+        return "中关系"
+    if score > 0:
+        return "弱关系"
+    return "未知关系"
+
+def relationship_entity_name(db, entity_type, entity_ref_id):
+    queries = {
+        "Customer": "SELECT name FROM customers WHERE id = ?",
+        "Person": "SELECT name FROM persons WHERE id = ?",
+        "Project": "SELECT name FROM projects WHERE id = ?",
+        "Opportunity": "SELECT name FROM opportunities WHERE id = ?",
+        "Agent": "SELECT name FROM agents WHERE id = ?",
+    }
+    if entity_type in queries:
+        row = db.execute(queries[entity_type], (entity_ref_id,)).fetchone()
+        return row["name"] if row else None
+    ref = str(entity_ref_id)
+    if ref.startswith("customer:"):
+        ref = ref.split(":", 1)[1]
+        row = db.execute("SELECT name FROM customer_organizations WHERE id = ?", (ref,)).fetchone()
+        return row["name"] if row else None
+    if ref.startswith("sales:"):
+        ref = ref.split(":", 1)[1]
+        row = db.execute("SELECT name FROM sales_organizations WHERE id = ?", (ref,)).fetchone()
+        return row["name"] if row else None
+    row = db.execute(
+        "SELECT name FROM customer_organizations WHERE id = ?",
+        (entity_ref_id,),
+    ).fetchone()
+    if row:
+        return row["name"]
+    row = db.execute("SELECT name FROM sales_organizations WHERE id = ?", (entity_ref_id,)).fetchone()
+    return row["name"] if row else None
+
+def ensure_relationship_entity(db, entity_type, entity_ref_id, entity_name=None, metadata=None, now=None):
+    entity_type = str(entity_type or "").strip()
+    entity_ref_id = str(entity_ref_id or "").strip()
+    if entity_type not in RELATIONSHIP_ENTITY_TYPES or not entity_ref_id:
+        raise ValueError("entityType and entityRefId are required")
+    now = now or datetime.now(timezone.utc).isoformat()
+    resolved_name = str(entity_name or "").strip() or relationship_entity_name(db, entity_type, entity_ref_id)
+    if not resolved_name:
+        raise ValueError(f"{entity_type} entity not found")
+    metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+    db.execute(
+        """INSERT INTO relationship_entities
+           (entity_type, entity_ref_id, entity_name, metadata_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(entity_type, entity_ref_id)
+           DO UPDATE SET entity_name = excluded.entity_name,
+                         metadata_json = CASE WHEN excluded.metadata_json = '{}' THEN relationship_entities.metadata_json ELSE excluded.metadata_json END,
+                         updated_at = excluded.updated_at""",
+        (entity_type, entity_ref_id, resolved_name, metadata_json, now, now),
+    )
+    return db.execute(
+        "SELECT * FROM relationship_entities WHERE entity_type = ? AND entity_ref_id = ?",
+        (entity_type, entity_ref_id),
+    ).fetchone()
+
+def relationship_type_row(db, code=None, type_id=None):
+    if type_id is not None:
+        return db.execute("SELECT * FROM relationship_types WHERE id = ?", (type_id,)).fetchone()
+    return db.execute("SELECT * FROM relationship_types WHERE code = ?", (code,)).fetchone()
+
+def upsert_relationship(db, source_entity_id, target_entity_id, relationship_type_id, payload=None, now=None):
+    payload = payload or {}
+    now = now or datetime.now(timezone.utc).isoformat()
+    score = max(0, min(100, int(payload.get("strengthScore", payload.get("score", 0)) or 0)))
+    status = str(payload.get("status", "active")).strip() or "active"
+    confidence = max(0, min(100, int(payload.get("confidence", 0) or 0)))
+    db.execute(
+        """INSERT INTO relationships
+           (source_entity_id, target_entity_id, relationship_type_id,
+            strength_score, strength_level, status, confidence, last_contact_at,
+            interaction_count, first_established_at, last_evaluated_at, notes,
+            evidence_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(source_entity_id, target_entity_id, relationship_type_id)
+           DO UPDATE SET strength_score = excluded.strength_score,
+                         strength_level = excluded.strength_level,
+                         status = excluded.status,
+                         confidence = excluded.confidence,
+                         last_contact_at = COALESCE(excluded.last_contact_at, relationships.last_contact_at),
+                         interaction_count = MAX(relationships.interaction_count, excluded.interaction_count),
+                         first_established_at = COALESCE(relationships.first_established_at, excluded.first_established_at),
+                         last_evaluated_at = COALESCE(excluded.last_evaluated_at, relationships.last_evaluated_at),
+                         notes = excluded.notes,
+                         evidence_json = excluded.evidence_json,
+                         updated_at = excluded.updated_at""",
+        (
+            source_entity_id,
+            target_entity_id,
+            relationship_type_id,
+            score,
+            relationship_score_level(score),
+            status,
+            confidence,
+            payload.get("lastContactAt"),
+            max(0, int(payload.get("interactionCount", 0) or 0)),
+            payload.get("firstEstablishedAt") or now,
+            payload.get("lastEvaluatedAt") or now,
+            str(payload.get("notes", "")).strip(),
+            json.dumps(payload.get("evidence") or {}, ensure_ascii=False),
+            now,
+            now,
+        ),
+    )
+    return db.execute(
+        """SELECT * FROM relationships
+           WHERE source_entity_id = ? AND target_entity_id = ? AND relationship_type_id = ?""",
+        (source_entity_id, target_entity_id, relationship_type_id),
+    ).fetchone()
+
+def seed_relationship_ontology(db, now):
+    # 组织主键来自两棵独立组织树，关系层使用命名空间避免数字 ID 碰撞。
+    for row in db.execute(
+        "SELECT id, entity_ref_id FROM relationship_entities WHERE entity_type = 'Organization'"
+    ).fetchall():
+        ref = str(row["entity_ref_id"])
+        if ":" in ref:
+            continue
+        if db.execute("SELECT 1 FROM customer_organizations WHERE id = ?", (ref,)).fetchone():
+            db.execute("UPDATE relationship_entities SET entity_ref_id = ? WHERE id = ?", (f"customer:{ref}", row["id"]))
+        elif db.execute("SELECT 1 FROM sales_organizations WHERE id = ?", (ref,)).fetchone():
+            db.execute("UPDATE relationship_entities SET entity_ref_id = ? WHERE id = ?", (f"sales:{ref}", row["id"]))
+    for code, name, source_type, target_type, category, description in RELATIONSHIP_TYPE_DEFINITIONS:
+        db.execute(
+            """INSERT OR IGNORE INTO relationship_types
+               (code, name, source_entity_type, target_entity_type, category, description, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (code, name, source_type, target_type, category, description, now, now),
+        )
+    for table, entity_type, id_column, ref_prefix in [
+        ("customers", "Customer", "id", ""),
+        ("customer_organizations", "Organization", "id", "customer:"),
+        ("persons", "Person", "id", ""),
+        ("projects", "Project", "id", ""),
+        ("opportunities", "Opportunity", "id", ""),
+        ("agents", "Agent", "id", ""),
+    ]:
+        for row in db.execute(f"SELECT {id_column} AS id, name FROM {table}").fetchall():
+            ensure_relationship_entity(db, entity_type, f"{ref_prefix}{row['id']}", row["name"], now=now)
+    for row in db.execute("SELECT id, name FROM sales_organizations").fetchall():
+        ensure_relationship_entity(db, "Organization", f"sales:{row['id']}", row["name"], now=now)
+
+    def seed_legacy(source_type, source_id, target_type, target_id, type_code, score=0, status="active", notes=""):
+        source = ensure_relationship_entity(db, source_type, source_id, now=now)
+        target = ensure_relationship_entity(db, target_type, target_id, now=now)
+        rel_type = relationship_type_row(db, code=type_code)
+        if source and target and rel_type:
+            upsert_relationship(db, source["id"], target["id"], rel_type["id"], {
+                "strengthScore": score,
+                "status": status,
+                "notes": notes,
+                "confidence": 80,
+            }, now)
+
+    customer_roles = {
+        "负责人": "person_customer_owner", "联系人": "person_customer_contact",
+        "决策人": "person_customer_decision_maker", "影响人": "person_customer_influencer",
+        "采购负责人": "person_customer_procurement_owner", "技术负责人": "person_customer_technical_owner",
+    }
+    for row in db.execute("SELECT customer_id, person_id, role FROM customer_persons").fetchall():
+        seed_legacy("Person", row["person_id"], "Customer", row["customer_id"], customer_roles.get(row["role"], "person_customer_contact"))
+    project_roles = {
+        "项目负责人": "person_project_owner", "甲方代表": "person_project_client_representative",
+        "设计负责人": "person_project_design_lead", "施工负责人": "person_project_contractor_lead",
+        "采购负责人": "person_project_procurement_owner",
+    }
+    for row in db.execute("SELECT project_id, person_id, role FROM project_persons").fetchall():
+        seed_legacy("Person", row["person_id"], "Project", row["project_id"], project_roles.get(row["role"], "person_project_owner"))
+    opportunity_roles = {
+        "业务发起人": "person_opportunity_sponsor", "决策人": "person_opportunity_decision_maker",
+        "技术推动者": "person_opportunity_influencer", "采购把关人": "person_opportunity_decision_maker",
+    }
+    for row in db.execute("SELECT opportunity_id, person_id, role, influence_level, relationship_status, notes FROM opportunity_persons").fetchall():
+        score = {"高": 85, "中": 60, "低": 30}.get(row["influence_level"], 0)
+        status = "inactive" if row["relationship_status"] == "已失联" else "active"
+        seed_legacy("Person", row["person_id"], "Opportunity", row["opportunity_id"], opportunity_roles.get(row["role"], "person_opportunity_influencer"), score, status, row["notes"])
+    party_roles = {
+        "甲方代表": "person_project_client_representative", "设计院": "person_project_design_lead",
+        "总包": "person_project_contractor_lead", "采购负责人": "person_project_procurement_owner",
+    }
+    for row in db.execute("SELECT project_id, person_id, party_type, notes FROM project_parties WHERE person_id IS NOT NULL").fetchall():
+        seed_legacy("Person", row["person_id"], "Project", row["project_id"], party_roles.get(row["party_type"], "person_project_owner"), notes=row["notes"])
+
+def seed_relationship_score_config(db, now):
+    weights = DEFAULT_RELATIONSHIP_SCORE_WEIGHTS
+    db.execute(
+        """INSERT OR IGNORE INTO relationship_score_configs
+           (code, name, interaction_frequency_weight, recency_weight,
+            influence_weight, history_weight, duration_weight, status,
+            is_default, description, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?)""",
+        (
+            "relationship-score-v1",
+            "关系强度自动评分 V1",
+            weights["interaction_frequency"],
+            weights["recency"],
+            weights["influence"],
+            weights["history"],
+            weights["duration"],
+            "按互动频率、最近联系、职位影响力、历史合作和关系持续时间自动计算关系强度。",
+            now,
+            now,
+        ),
+    )
+
+def relationship_item(db, row):
+    item = dict(row)
+    item["sourceEntity"] = {
+        "id": item.pop("source_entity_id"), "type": item.pop("source_entity_type"),
+        "refId": item.pop("source_entity_ref_id"), "name": item.pop("source_entity_name"),
+    }
+    item["targetEntity"] = {
+        "id": item.pop("target_entity_id"), "type": item.pop("target_entity_type"),
+        "refId": item.pop("target_entity_ref_id"), "name": item.pop("target_entity_name"),
+    }
+    item["relationshipType"] = {
+        "id": item.pop("relationship_type_id"), "code": item.pop("relationship_type_code"),
+        "name": item.pop("relationship_type_name"), "category": item.pop("relationship_category"),
+    }
+    return item
+
+def get_relationships(db, entity_type=None, entity_ref_id=None, relationship_type_code=None, status=None):
+    clauses = []
+    values = []
+    if entity_type and entity_ref_id is not None:
+        clauses.append("(se.entity_type = ? AND se.entity_ref_id = ? OR te.entity_type = ? AND te.entity_ref_id = ?)")
+        values.extend([entity_type, str(entity_ref_id), entity_type, str(entity_ref_id)])
+    if relationship_type_code:
+        clauses.append("rt.code = ?")
+        values.append(relationship_type_code)
+    if status:
+        clauses.append("r.status = ?")
+        values.append(status)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = db.execute(
+        f"""SELECT r.*, se.entity_type AS source_entity_type, se.entity_ref_id AS source_entity_ref_id,
+                   se.entity_name AS source_entity_name, te.entity_type AS target_entity_type,
+                   te.entity_ref_id AS target_entity_ref_id, te.entity_name AS target_entity_name,
+                   rt.code AS relationship_type_code, rt.name AS relationship_type_name,
+                   rt.category AS relationship_category
+            FROM relationships r
+            JOIN relationship_entities se ON se.id = r.source_entity_id
+            JOIN relationship_entities te ON te.id = r.target_entity_id
+            JOIN relationship_types rt ON rt.id = r.relationship_type_id
+            {where}
+            ORDER BY r.strength_score DESC, r.updated_at DESC, r.id DESC""",
+        tuple(values),
+    ).fetchall()
+    return [relationship_item(db, row) for row in rows]
+
+def get_relationship_detail(db, relationship_id):
+    rows = db.execute(
+        """SELECT r.*, se.entity_type AS source_entity_type, se.entity_ref_id AS source_entity_ref_id,
+                  se.entity_name AS source_entity_name, te.entity_type AS target_entity_type,
+                  te.entity_ref_id AS target_entity_ref_id, te.entity_name AS target_entity_name,
+                  rt.code AS relationship_type_code, rt.name AS relationship_type_name,
+                  rt.category AS relationship_category
+           FROM relationships r
+           JOIN relationship_entities se ON se.id = r.source_entity_id
+           JOIN relationship_entities te ON te.id = r.target_entity_id
+           JOIN relationship_types rt ON rt.id = r.relationship_type_id
+           WHERE r.id = ?""",
+        (relationship_id,),
+    ).fetchone()
+    if not rows:
+        return None
+    item = relationship_item(db, rows)
+    item["scores"] = [dict(x) for x in db.execute(
+        "SELECT * FROM relationship_scores WHERE relationship_id = ? ORDER BY calculated_at DESC, id DESC",
+        (relationship_id,),
+    ).fetchall()]
+    item["events"] = [dict(x) for x in db.execute(
+        "SELECT * FROM relationship_events WHERE relationship_id = ? ORDER BY event_time DESC, id DESC",
+        (relationship_id,),
+    ).fetchall()]
+    item["scoreConfig"] = get_relationship_score_config(db)
+    item["latestScore"] = item["scores"][0] if item["scores"] else None
+    return item
+
+def relationship_score_config_item(row):
+    if not row:
+        weights = dict(DEFAULT_RELATIONSHIP_SCORE_WEIGHTS)
+        return {
+            "id": None,
+            "code": "relationship-score-v1",
+            "name": "关系强度自动评分 V1",
+            "weights": weights,
+            "status": "active",
+            "isDefault": True,
+            "description": "按互动频率、最近联系、职位影响力、历史合作和关系持续时间自动计算关系强度。",
+        }
+    item = dict(row)
+    weights = {
+        "interaction_frequency": float(item.pop("interaction_frequency_weight")),
+        "recency": float(item.pop("recency_weight")),
+        "influence": float(item.pop("influence_weight")),
+        "history": float(item.pop("history_weight")),
+        "duration": float(item.pop("duration_weight")),
+    }
+    item["weights"] = weights
+    item["isDefault"] = bool(item.pop("is_default", 0))
+    return item
+
+def get_relationship_score_config(db):
+    row = db.execute(
+        """SELECT * FROM relationship_score_configs
+           WHERE status = 'active'
+           ORDER BY is_default DESC, id DESC LIMIT 1"""
+    ).fetchone()
+    return relationship_score_config_item(row)
+
+def normalize_relationship_score_weights(payload):
+    raw = payload.get("weights") if isinstance(payload.get("weights"), dict) else payload
+    aliases = {
+        "interaction_frequency": ("interaction_frequency", "interactionFrequency", "interactionFrequencyWeight"),
+        "recency": ("recency", "recencyWeight"),
+        "influence": ("influence", "influenceWeight"),
+        "history": ("history", "historyWeight"),
+        "duration": ("duration", "durationWeight"),
+    }
+    values = {}
+    try:
+        for factor in RELATIONSHIP_SCORE_FACTORS:
+            value = next((raw[key] for key in aliases[factor] if key in raw), None)
+            if value is None:
+                raise ValueError(f"missing weight: {factor}")
+            values[factor] = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(str(exc))
+    if any(value < 0 for value in values.values()):
+        raise ValueError("weights must be non-negative")
+    total = sum(values.values())
+    if total <= 0:
+        raise ValueError("at least one weight is required")
+    if total > 1:
+        values = {factor: value / 100 for factor, value in values.items()}
+        total = sum(values.values())
+    if total <= 0:
+        raise ValueError("weights must sum to a positive value")
+    return {factor: round(value / total, 6) for factor, value in values.items()}
+
+def calculate_relationship_strength_auto(db, relationship_id, now=None):
+    """按五项可配置因素自动计算关系强度，并保存完整评分明细。"""
+    now = now or datetime.now(timezone.utc).isoformat()
+    relationship = db.execute(
+        """SELECT r.*, se.entity_type AS source_entity_type, se.entity_ref_id AS source_entity_ref_id,
+                  te.entity_type AS target_entity_type, te.entity_ref_id AS target_entity_ref_id,
+                  rt.name AS relationship_type_name, rt.default_weight
+           FROM relationships r
+           JOIN relationship_entities se ON se.id = r.source_entity_id
+           JOIN relationship_entities te ON te.id = r.target_entity_id
+           JOIN relationship_types rt ON rt.id = r.relationship_type_id
+           WHERE r.id = ?""",
+        (relationship_id,),
+    ).fetchone()
+    if not relationship:
+        raise LookupError("relationship not found")
+
+    def parse_time(value):
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+        except ValueError:
+            return None
+
+    now_dt = parse_time(now) or datetime.now(timezone.utc)
+    events = db.execute(
+        "SELECT event_time, impact_score FROM relationship_events WHERE relationship_id = ? ORDER BY event_time DESC, id DESC",
+        (relationship_id,),
+    ).fetchall()
+    event_times = [(parse_time(event["event_time"]), int(event["impact_score"] or 0)) for event in events]
+    valid_times = [(event_time, impact) for event_time, impact in event_times if event_time]
+    recent_count = sum(1 for event_time, _ in valid_times if 0 <= (now_dt - event_time).days <= 90)
+    if not recent_count:
+        recent_count = min(int(relationship["interaction_count"] or 0), 5)
+    interaction_frequency_score = min(100, recent_count * 20)
+
+    last_contact = parse_time(relationship["last_contact_at"])
+    if valid_times:
+        contact_times = [event_time for event_time, _ in valid_times]
+        if last_contact:
+            contact_times.append(last_contact)
+        last_contact = max(contact_times)
+    if not last_contact:
+        recency_score = 0
+    else:
+        age_days = max(0, (now_dt - last_contact).days)
+        recency_score = 100 if age_days <= 7 else 85 if age_days <= 14 else 70 if age_days <= 30 else 45 if age_days <= 60 else 25 if age_days <= 90 else 10
+
+    influence_score = int(relationship["default_weight"] or 50)
+    if relationship["source_entity_type"] == "Person":
+        influence_level = None
+        if relationship["target_entity_type"] == "Opportunity":
+            row = db.execute(
+                """SELECT influence_level FROM opportunity_persons
+                   WHERE opportunity_id = ? AND person_id = ?
+                   ORDER BY updated_at DESC LIMIT 1""",
+                (relationship["target_entity_ref_id"], relationship["source_entity_ref_id"]),
+            ).fetchone()
+            influence_level = row["influence_level"] if row else None
+        influence_score = {"高": 100, "中": 70, "低": 40, "未知": 25}.get(influence_level, influence_score)
+        if not influence_level and "决策" in str(relationship["relationship_type_name"]):
+            influence_score = max(influence_score, 90)
+
+    event_count = len(events)
+    first_established = parse_time(relationship["first_established_at"])
+    duration_days = max(0, (now_dt - first_established).days) if first_established else 0
+    duration_score = 100 if duration_days >= 730 else 85 if duration_days >= 365 else 70 if duration_days >= 180 else 45 if duration_days >= 90 else 20 if duration_days >= 30 else 0
+    positive_impact_score = min(30, max(0, sum(impact for _, impact in valid_times) * 3))
+    history_score = min(100, min(70, event_count * 10) + positive_impact_score)
+
+    config = get_relationship_score_config(db)
+    weights = config["weights"]
+    components = {
+        "interaction_frequency": {"score": interaction_frequency_score, "weight": weights["interaction_frequency"], "weightedScore": round(interaction_frequency_score * weights["interaction_frequency"], 2)},
+        "recency": {"score": recency_score, "weight": weights["recency"], "weightedScore": round(recency_score * weights["recency"], 2)},
+        "influence": {"score": influence_score, "weight": weights["influence"], "weightedScore": round(influence_score * weights["influence"], 2)},
+        "history": {"score": history_score, "weight": weights["history"], "weightedScore": round(history_score * weights["history"], 2)},
+        "duration": {"score": duration_score, "weight": weights["duration"], "weightedScore": round(duration_score * weights["duration"], 2)},
+    }
+
+    score = round(
+        sum(item["weightedScore"] for item in components.values())
+    )
+    level = relationship_score_level(score)
+    reason = (
+        f"自动评分 V1：互动频率 {interaction_frequency_score}（{round(weights['interaction_frequency'] * 100)}%）、"
+        f"最近联系 {recency_score}（{round(weights['recency'] * 100)}%）、职位影响力 {influence_score}（{round(weights['influence'] * 100)}%）、"
+        f"历史合作 {history_score}（{round(weights['history'] * 100)}%）、关系持续时间 {duration_score}（{round(weights['duration'] * 100)}%）。"
+    )
+    db.execute(
+        """INSERT INTO relationship_scores
+           (relationship_id, score, level, interaction_frequency_score,
+            recency_score, influence_score, history_score, duration_score,
+            weights_json, components_json, reason,
+            calculated_by, calculated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            relationship_id,
+            score,
+            level,
+            interaction_frequency_score,
+            recency_score,
+            influence_score,
+            history_score,
+            duration_score,
+            json.dumps(weights, ensure_ascii=False),
+            json.dumps(components, ensure_ascii=False),
+            reason,
+            "relationship_score_engine_v1",
+            now,
+        ),
+    )
+    db.execute(
+        """UPDATE relationships
+           SET strength_score = ?, strength_level = ?, last_evaluated_at = ?, updated_at = ?
+           WHERE id = ?""",
+        (score, level, now, now, relationship_id),
+    )
+    return get_relationship_detail(db, relationship_id)
+
+def backfill_relationship_scores(db, now=None):
+    """为旧关系补一次 V1 自动评分，避免每次启动重复写评分历史。"""
+    now = now or datetime.now(timezone.utc).isoformat()
+    rows = db.execute(
+        """SELECT r.id FROM relationships r
+           WHERE NOT EXISTS (
+             SELECT 1 FROM relationship_scores s
+             WHERE s.relationship_id = r.id AND s.calculated_by = 'relationship_score_engine_v1'
+           )"""
+    ).fetchall()
+    for row in rows:
+        calculate_relationship_strength_auto(db, row["id"], now)
+
+def get_relationship_network(db, entity_type, entity_ref_id):
+    center = db.execute(
+        "SELECT * FROM relationship_entities WHERE entity_type = ? AND entity_ref_id = ?",
+        (entity_type, str(entity_ref_id)),
+    ).fetchone()
+    if not center:
+        return None
+    relations = get_relationships(db, entity_type, entity_ref_id)
+    nodes = {center["id"]: {"id": center["id"], "type": center["entity_type"], "refId": center["entity_ref_id"], "name": center["entity_name"]}}
+    edges = []
+    for relation in relations:
+        source = relation["sourceEntity"]
+        target = relation["targetEntity"]
+        nodes[source["id"]] = source
+        nodes[target["id"]] = target
+        edges.append({
+            "id": relation["id"], "source": source["id"], "target": target["id"],
+            "type": relation["relationshipType"], "score": relation["strength_score"],
+            "level": relation["strength_level"], "status": relation["status"],
+        })
+    return {"center": nodes[center["id"]], "nodes": list(nodes.values()), "edges": edges}
+
+def seed_relationship_analysis(db, entity_type, entity_ref_id):
+    network = get_relationship_network(db, entity_type, entity_ref_id)
+    if not network:
+        return None
+    return {
+        "entity": network["center"],
+        "network": network,
+        "relationshipCount": len(network["edges"]),
+        "strongRelationshipCount": sum(1 for edge in network["edges"] if edge["score"] >= 80),
+        "gaps": ["决策人", "采购负责人", "技术负责人"] if entity_type == "Customer" else [],
+    }
+
+class RelationshipService:
+    """关系认知层服务，统一承载网络查询、决策链推荐和关系变化计算。"""
+
+    def __init__(self, db, now=None):
+        self.db = db
+        self.now = now or datetime.now(timezone.utc).isoformat()
+
+    def query_customer_network(self, customer_id):
+        result = seed_relationship_analysis(self.db, "Customer", customer_id)
+        if not result:
+            raise LookupError("customer relationship entity not found")
+        return result
+
+    def find_decision_makers(self, opportunity_id):
+        opportunity = self.db.execute(
+            "SELECT id, name, customer_id, project_id FROM opportunities WHERE id = ?",
+            (opportunity_id,),
+        ).fetchone()
+        if not opportunity:
+            raise LookupError("opportunity not found")
+        relations = get_relationships(self.db, "Opportunity", opportunity_id)
+        candidates = [
+            relation for relation in relations
+            if relation["sourceEntity"]["type"] == "Person"
+            and "决策" in relation["relationshipType"]["name"]
+        ]
+        source = "opportunity"
+        if not candidates and opportunity["customer_id"]:
+            relations = get_relationships(self.db, "Customer", opportunity["customer_id"])
+            candidates = [
+                relation for relation in relations
+                if relation["sourceEntity"]["type"] == "Person"
+                and "决策" in relation["relationshipType"]["name"]
+            ]
+            source = "customer_fallback"
+        return {
+            "opportunity": dict(opportunity),
+            "recommended": candidates[:10],
+            "source": source,
+            "reason": "按关系强度、影响力和最近活动排序；当前商机没有直接决策人时回退到客户关系。",
+        }
+
+    def recommend_breakthrough_path(self, project_id):
+        project = self.db.execute(
+            "SELECT id, name, customer_id FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        if not project:
+            raise LookupError("project not found")
+        relations = get_relationships(self.db, "Project", project_id)
+        candidates = [
+            relation for relation in relations
+            if relation["sourceEntity"]["type"] == "Person"
+        ]
+        source = "project"
+        if not candidates and project["customer_id"]:
+            candidates = [
+                relation for relation in get_relationships(self.db, "Customer", project["customer_id"])
+                if relation["sourceEntity"]["type"] == "Person"
+            ]
+            source = "customer_fallback"
+        return {
+            "project": dict(project),
+            "recommendedPath": candidates[:10],
+            "source": source,
+            "reason": "优先推荐关系强度高、影响力高且有近期互动的联系人。",
+        }
+
+    def calculate_strength(self, relationship_id, payload):
+        if payload.get("mode") == "auto" or payload.get("score") in (None, ""):
+            return calculate_relationship_strength_auto(self.db, relationship_id, self.now)
+        try:
+            score = float(payload.get("score"))
+        except (TypeError, ValueError):
+            raise ValueError("numeric score is required")
+        if not 0 <= score <= 100:
+            raise ValueError("score must be between 0 and 100")
+        relationship = self.db.execute("SELECT * FROM relationships WHERE id = ?", (relationship_id,)).fetchone()
+        if not relationship:
+            raise LookupError("relationship not found")
+        score = round(score, 2)
+        calculated_at = payload.get("calculatedAt") or self.now
+        self.db.execute(
+            """INSERT INTO relationship_scores
+               (relationship_id, score, level, interaction_frequency_score,
+                recency_score, influence_score, history_score, reason,
+                calculated_by, calculated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                relationship_id,
+                score,
+                str(payload.get("level") or relationship_score_level(score)),
+                payload.get("interactionFrequencyScore"),
+                payload.get("recencyScore"),
+                payload.get("influenceScore"),
+                payload.get("historyScore"),
+                str(payload.get("reason", "")).strip(),
+                str(payload.get("calculatedBy", "manual")).strip() or "manual",
+                calculated_at,
+            ),
+        )
+        self.db.execute(
+            """UPDATE relationships
+               SET strength_score = ?, strength_level = ?, last_evaluated_at = ?, updated_at = ?
+               WHERE id = ?""",
+            (score, str(payload.get("level") or relationship_score_level(score)), calculated_at, self.now, relationship_id),
+        )
+        return get_relationship_detail(self.db, relationship_id)
+
+    def record_change(self, relationship_id, payload):
+        relationship = self.db.execute("SELECT * FROM relationships WHERE id = ?", (relationship_id,)).fetchone()
+        if not relationship:
+            raise LookupError("relationship not found")
+        event_time = str(payload.get("eventTime") or self.now).strip()
+        try:
+            impact_score = int(payload.get("impactScore", 0) or 0)
+        except (TypeError, ValueError):
+            raise ValueError("impactScore must be numeric")
+        before_score = int(relationship["strength_score"] or 0)
+        after_score = before_score
+        event_cur = self.db.execute(
+            """INSERT INTO relationship_events
+               (relationship_id, event_type, event_time, source, impact_score,
+                before_score, after_score, description, evidence_type,
+                evidence_ref, created_by, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                relationship_id,
+                str(payload.get("eventType", "interaction")).strip() or "interaction",
+                event_time,
+                str(payload.get("source", "manual")).strip() or "manual",
+                impact_score,
+                before_score,
+                after_score,
+                str(payload.get("description", "")).strip(),
+                str(payload.get("evidenceType", "")).strip(),
+                str(payload.get("evidenceRef", "")).strip(),
+                str(payload.get("createdBy", "manual")).strip() or "manual",
+                self.now,
+            ),
+        )
+        self.db.execute(
+            """UPDATE relationships
+               SET strength_score = ?, strength_level = ?, last_contact_at = ?,
+                   interaction_count = interaction_count + 1, updated_at = ?
+               WHERE id = ?""",
+            (after_score, relationship_score_level(after_score), event_time, self.now, relationship_id),
+        )
+        detail = calculate_relationship_strength_auto(self.db, relationship_id, self.now)
+        self.db.execute(
+            "UPDATE relationship_events SET after_score = ? WHERE id = ?",
+            (detail["strength_score"], event_cur.lastrowid),
+        )
+        return get_relationship_detail(self.db, relationship_id)
 
 def get_sales_organization_ontology(db):
     organizations = []
@@ -1313,6 +3917,166 @@ class Handler(BaseHTTPRequestHandler):
         with connect() as db:
             if path == "/api/health":
                 return self.send_json({"status": "ok", "database": str(DB_PATH)})
+            if path == "/api/relationship-score/config":
+                return self.send_json(get_relationship_score_config(db))
+            if path == "/api/relationship-types":
+                params = parse_qs(urlparse(self.path).query)
+                clauses = []
+                values = []
+                if params.get("sourceEntityType"):
+                    clauses.append("source_entity_type = ?")
+                    values.append(params["sourceEntityType"][0])
+                if params.get("targetEntityType"):
+                    clauses.append("target_entity_type = ?")
+                    values.append(params["targetEntityType"][0])
+                if params.get("status"):
+                    clauses.append("status = ?")
+                    values.append(params["status"][0])
+                where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+                rows = db.execute(
+                    f"SELECT * FROM relationship_types {where} ORDER BY category, name, id",
+                    tuple(values),
+                ).fetchall()
+                return self.send_json([dict(row) for row in rows])
+            if path == "/api/relationship-entities":
+                params = parse_qs(urlparse(self.path).query)
+                clauses = []
+                values = []
+                if params.get("entityType"):
+                    clauses.append("entity_type = ?")
+                    values.append(params["entityType"][0])
+                if params.get("status"):
+                    clauses.append("status = ?")
+                    values.append(params["status"][0])
+                where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+                rows = db.execute(
+                    f"SELECT * FROM relationship_entities {where} ORDER BY entity_type, entity_name, id",
+                    tuple(values),
+                ).fetchall()
+                result = []
+                for row in rows:
+                    item = dict(row)
+                    item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+                    result.append(item)
+                return self.send_json(result)
+            if path == "/api/relationships":
+                params = parse_qs(urlparse(self.path).query)
+                return self.send_json(get_relationships(
+                    db,
+                    entity_type=params.get("entityType", [None])[0],
+                    entity_ref_id=params.get("entityRefId", [None])[0],
+                    relationship_type_code=params.get("relationshipTypeCode", [None])[0],
+                    status=params.get("status", [None])[0],
+                ))
+            if path.startswith("/api/relationships/"):
+                parts = path.strip("/").split("/")
+                try:
+                    relationship_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid relationship id"}, 400)
+                if len(parts) == 3:
+                    item = get_relationship_detail(db, relationship_id)
+                    return self.send_json(item or {"error": "relationship not found"}, 200 if item else 404)
+            if path.startswith("/api/relationship-network/"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 3:
+                    return self.send_json({"error": "entity type and ref id are required"}, 400)
+                network = get_relationship_network(db, unquote(parts[1]), unquote(parts[2]))
+                return self.send_json(network or {"error": "relationship entity not found"}, 200 if network else 404)
+            if path.startswith("/api/relationship-service/customers/") and path.endswith("/network"):
+                parts = path.strip("/").split("/")
+                try:
+                    customer_id = int(parts[3])
+                    result = RelationshipService(db).query_customer_network(customer_id)
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer id"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result)
+            if path.startswith("/api/relationship-service/opportunities/") and path.endswith("/decision-makers"):
+                parts = path.strip("/").split("/")
+                try:
+                    opportunity_id = int(parts[3])
+                    result = RelationshipService(db).find_decision_makers(opportunity_id)
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid opportunity id"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result)
+            if path.startswith("/api/relationship-service/projects/") and path.endswith("/breakthrough-path"):
+                parts = path.strip("/").split("/")
+                try:
+                    project_id = int(parts[3])
+                    result = RelationshipService(db).recommend_breakthrough_path(project_id)
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid project id"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result)
+            if path.startswith("/api/relationship-analysis/customer/"):
+                parts = path.strip("/").split("/")
+                try:
+                    customer_id = int(parts[3])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer id"}, 400)
+                analysis = seed_relationship_analysis(db, "Customer", customer_id)
+                return self.send_json(analysis or {"error": "customer relationship entity not found"}, 200 if analysis else 404)
+            if path.startswith("/api/relationship-analysis/opportunity/") and path.endswith("/decision-maker"):
+                parts = path.strip("/").split("/")
+                try:
+                    opportunity_id = int(parts[3])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid opportunity id"}, 400)
+                opportunity = db.execute(
+                    "SELECT id, name, customer_id, project_id FROM opportunities WHERE id = ?",
+                    (opportunity_id,),
+                ).fetchone()
+                if not opportunity:
+                    return self.send_json({"error": "opportunity not found"}, 404)
+                relations = get_relationships(db, "Opportunity", opportunity_id)
+                candidates = [
+                    relation for relation in relations
+                    if relation["sourceEntity"]["type"] == "Person"
+                    and "决策" in relation["relationshipType"]["name"]
+                ]
+                if not candidates and opportunity["customer_id"]:
+                    relations = get_relationships(db, "Customer", opportunity["customer_id"])
+                    candidates = [
+                        relation for relation in relations
+                        if relation["sourceEntity"]["type"] == "Person"
+                        and "决策" in relation["relationshipType"]["name"]
+                    ]
+                return self.send_json({
+                    "opportunity": dict(opportunity),
+                    "recommended": candidates[:10],
+                    "reason": "按关系强度、影响力和最近活动排序；当前商机没有直接决策人时回退到客户关系。",
+                })
+            if path.startswith("/api/relationship-analysis/project/") and path.endswith("/path"):
+                parts = path.strip("/").split("/")
+                try:
+                    project_id = int(parts[3])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid project id"}, 400)
+                project = db.execute(
+                    "SELECT id, name, customer_id FROM projects WHERE id = ?", (project_id,)
+                ).fetchone()
+                if not project:
+                    return self.send_json({"error": "project not found"}, 404)
+                relations = get_relationships(db, "Project", project_id)
+                candidates = [
+                    relation for relation in relations
+                    if relation["sourceEntity"]["type"] == "Person"
+                ]
+                if not candidates and project["customer_id"]:
+                    candidates = [
+                        relation for relation in get_relationships(db, "Customer", project["customer_id"])
+                        if relation["sourceEntity"]["type"] == "Person"
+                    ]
+                return self.send_json({
+                    "project": dict(project),
+                    "recommendedPath": candidates[:10],
+                    "reason": "优先推荐关系强度高、影响力高且有近期互动的联系人。",
+                })
             if path == "/api/stage-definitions":
                 rows = db.execute("SELECT * FROM stage_definitions ORDER BY sequence").fetchall()
                 result = []
@@ -1381,15 +4145,222 @@ class Handler(BaseHTTPRequestHandler):
                            ORDER BY p.updated_at DESC, p.id DESC"""
                     ).fetchall()
                 return self.send_json([dict(row) for row in rows])
+            if path == "/api/customer-profile-fact-definitions":
+                return self.send_json([
+                    {"code": code, "name": name, "category": category, "valueType": value_type}
+                    for code, name, category, value_type in PROFILE_FACT_DEFINITIONS
+                ])
+            if path == "/api/customer-profile-scoring/models":
+                params = parse_qs(urlparse(self.path).query)
+                status = params.get("status", [None])[0]
+                rows = db.execute(
+                    "SELECT id FROM customer_profile_scoring_models " + ("WHERE status = ? " if status else "") + "ORDER BY is_default DESC, model_code, version_no",
+                    (status,) if status else (),
+                ).fetchall()
+                return self.send_json([get_customer_profile_scoring_model(db, row["id"], active_only=False) for row in rows])
+            if path.startswith("/api/customer-profile-scoring/models/"):
+                try:
+                    model_id = int(path.strip("/").split("/")[3])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid scoring model id"}, 400)
+                model = get_customer_profile_scoring_model(db, model_id, active_only=False)
+                return self.send_json(model or {"error": "scoring model not found"}, 200 if model else 404)
+            if path == "/api/customer-profile-events":
+                params = parse_qs(urlparse(self.path).query)
+                clauses = []
+                values = []
+                for key, column in [("profileId", "profile_id"), ("customerId", "customer_id"), ("status", "status"), ("eventType", "event_type")]:
+                    if params.get(key):
+                        clauses.append(f"{column} = ?")
+                        values.append(params[key][0])
+                where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+                rows = db.execute(
+                    f"SELECT * FROM customer_profile_events {where} ORDER BY created_at DESC, id DESC LIMIT 100",
+                    tuple(values),
+                ).fetchall()
+                result = []
+                for row in rows:
+                    item = dict(row)
+                    item["eventName"] = CUSTOMER_PROFILE_EVENT_TYPES.get(item["event_type"], item["event_type"])
+                    item["payload"] = _json_value(item.pop("payload_json"), {})
+                    result.append(item)
+                return self.send_json(result)
+            if path.startswith("/api/customer-profile-events/"):
+                try:
+                    event_id = int(path.strip("/").split("/")[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer profile event id"}, 400)
+                event = get_customer_profile_event(db, event_id)
+                return self.send_json(event or {"error": "customer profile event not found"}, 200 if event else 404)
+            if path == "/api/customer-fact-extraction/rules":
+                return self.send_json({
+                    "ruleVersion": "customer-fact-extraction-v1",
+                    "sourceTypes": [{"code": code, "name": name} for code, name in FACT_EXTRACTION_SOURCE_TYPES.items()],
+                    "rules": CUSTOMER_FACT_EXTRACTION_RULES,
+                })
+            if path.startswith("/api/customer-fact-extraction-runs/"):
+                try:
+                    run_id = int(path.strip("/").split("/")[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid fact extraction run id"}, 400)
+                run = get_customer_fact_extraction_run(db, run_id)
+                return self.send_json(run or {"error": "fact extraction run not found"}, 200 if run else 404)
+            if path == "/api/customer-profiles":
+                query = urlparse(self.path).query
+                params = dict(item.split("=", 1) for item in query.split("&") if "=" in item)
+                values = []
+                conditions = []
+                if params.get("customerId"):
+                    try:
+                        values.append(int(params["customerId"]))
+                    except ValueError:
+                        return self.send_json({"error": "invalid customer id"}, 400)
+                    conditions.append("cp.customer_id = ?")
+                if params.get("status"):
+                    values.append(params["status"])
+                    conditions.append("cp.status = ?")
+                where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+                rows = db.execute(
+                    f"""SELECT cp.*, c.name AS customer_name,
+                              co.name AS customer_organization_name,
+                              (SELECT COUNT(*) FROM customer_profile_facts cpf WHERE cpf.profile_id = cp.id) AS fact_count,
+                              (SELECT COUNT(*) FROM customer_profile_scores cps WHERE cps.profile_id = cp.id) AS score_count,
+                              (SELECT COUNT(*) FROM customer_profile_summaries cpsu WHERE cpsu.profile_id = cp.id) AS summary_count,
+                              (SELECT COUNT(*) FROM customer_profile_evidences cpe WHERE cpe.profile_id = cp.id) AS evidence_count
+                       FROM customer_profiles cp
+                       JOIN customers c ON c.id = cp.customer_id
+                       LEFT JOIN customer_organizations co ON co.id = cp.customer_organization_id
+                       {where}
+                       ORDER BY cp.updated_at DESC, cp.id DESC""",
+                    tuple(values),
+                ).fetchall()
+                return self.send_json([dict(row) for row in rows])
+            if path.startswith("/api/customer-profiles/"):
+                parts = path.strip("/").split("/")
+                try:
+                    profile_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer profile id"}, 400)
+                if len(parts) == 4 and parts[3] == "fact-extraction-runs":
+                    if not _profile_row(db, profile_id):
+                        return self.send_json({"error": "customer profile not found"}, 404)
+                    rows = db.execute(
+                        """SELECT * FROM customer_fact_extraction_runs
+                           WHERE profile_id = ? ORDER BY started_at DESC, id DESC""",
+                        (profile_id,),
+                    ).fetchall()
+                    result = []
+                    for row in rows:
+                        item = dict(row)
+                        item["sourceTypes"] = _json_value(item.pop("source_types_json"), [])
+                        item["dryRun"] = bool(item.pop("dry_run"))
+                        result.append(item)
+                    return self.send_json(result)
+                if len(parts) == 4 and parts[3] == "context":
+                    context = get_customer_profile_context(db, profile_id)
+                    return self.send_json(context or {"error": "customer profile not found"}, 200 if context else 404)
+                if len(parts) == 3:
+                    profile = get_customer_profile(db, profile_id)
+                    return self.send_json(profile or {"error": "customer profile not found"}, 200 if profile else 404)
+            if path == "/api/customer-developments":
+                query = urlparse(self.path).query
+                params = dict(item.split("=", 1) for item in query.split("&") if "=" in item)
+                customer_id = params.get("customerId")
+                values = []
+                where = ""
+                if customer_id:
+                    try:
+                        values.append(int(customer_id))
+                    except ValueError:
+                        return self.send_json({"error": "invalid customer id"}, 400)
+                    where = "WHERE cd.customer_id = ?"
+                rows = db.execute(
+                    f"""SELECT cd.*, c.name AS customer_name, co.name AS customer_organization_name
+                        FROM customer_developments cd
+                        JOIN customers c ON c.id = cd.customer_id
+                        LEFT JOIN customer_organizations co ON co.id = cd.customer_organization_id
+                        {where}
+                        ORDER BY cd.updated_at DESC, cd.id DESC""",
+                    tuple(values),
+                ).fetchall()
+                result = []
+                for row in rows:
+                    item = dict(row)
+                    item["currentStage"] = customer_development_stage(item["current_stage_code"])
+                    item["actionCount"] = db.execute(
+                        """SELECT COUNT(*) FROM actions
+                           WHERE customer_development_id = ?
+                             AND status NOT IN ('completed', 'cancelled')""",
+                        (row["id"],),
+                    ).fetchone()[0]
+                    item["opportunityCount"] = db.execute(
+                        "SELECT COUNT(*) FROM customer_development_opportunities WHERE customer_development_id = ?",
+                        (row["id"],),
+                    ).fetchone()[0]
+                    item["projectCount"] = db.execute(
+                        "SELECT COUNT(*) FROM customer_development_projects WHERE customer_development_id = ?",
+                        (row["id"],),
+                    ).fetchone()[0]
+                    result.append(item)
+                return self.send_json(result)
+            if path.startswith("/api/customer-developments/"):
+                parts = path.strip("/").split("/")
+                try:
+                    development_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer development id"}, 400)
+                if len(parts) == 4 and parts[3] == "link-options":
+                    development = db.execute(
+                        "SELECT customer_id FROM customer_developments WHERE id = ?",
+                        (development_id,),
+                    ).fetchone()
+                    if not development:
+                        return self.send_json({"error": "customer development not found"}, 404)
+                    opportunities = db.execute(
+                        """SELECT o.id, o.name, o.stage, o.amount, o.business_type, o.owner,
+                                  p.name AS project_name
+                           FROM opportunities o
+                           LEFT JOIN projects p ON p.id = o.project_id
+                           WHERE o.customer_id = ?
+                             AND NOT EXISTS (
+                               SELECT 1 FROM customer_development_opportunities cdo
+                               WHERE cdo.customer_development_id = ? AND cdo.opportunity_id = o.id
+                             )
+                           ORDER BY o.updated_at DESC, o.id DESC""",
+                        (development["customer_id"], development_id),
+                    ).fetchall()
+                    projects = db.execute(
+                        """SELECT p.id, p.name, p.project_type, p.address, p.status
+                           FROM projects p
+                           WHERE p.customer_id = ?
+                             AND NOT EXISTS (
+                               SELECT 1 FROM customer_development_projects cdp
+                               WHERE cdp.customer_development_id = ? AND cdp.project_id = p.id
+                             )
+                           ORDER BY p.updated_at DESC, p.id DESC""",
+                        (development["customer_id"], development_id),
+                    ).fetchall()
+                    return self.send_json({
+                        "opportunities": [dict(x) for x in opportunities],
+                        "projects": [dict(x) for x in projects],
+                    })
+                if len(parts) == 3:
+                    item = get_customer_development(db, development_id)
+                    return self.send_json(item or {"error": "customer development not found"}, 200 if item else 404)
+                if len(parts) == 4 and parts[3] == "actions":
+                    if not db.execute("SELECT 1 FROM customer_developments WHERE id = ?", (development_id,)).fetchone():
+                        return self.send_json({"error": "customer development not found"}, 404)
+                    return self.send_json(get_actions(db, customer_development_id=development_id))
             if path == "/api/actions":
                 query = urlparse(self.path).query
                 params = dict(item.split("=", 1) for item in query.split("&") if "=" in item)
                 try:
                     opportunity_id = int(params["opportunityId"]) if params.get("opportunityId") else None
                     project_id = int(params["projectId"]) if params.get("projectId") else None
+                    customer_development_id = int(params["customerDevelopmentId"]) if params.get("customerDevelopmentId") else None
                 except ValueError:
                     return self.send_json({"error": "invalid action filter"}, 400)
-                return self.send_json(get_actions(db, opportunity_id, project_id, params.get("status")))
+                return self.send_json(get_actions(db, opportunity_id, project_id, params.get("status"), customer_development_id))
             if path.startswith("/api/projects/") and path.endswith("/parties"):
                 parts = path.strip("/").split("/")
                 try:
@@ -1429,6 +4400,14 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/people":
                 rows = db.execute("SELECT * FROM persons ORDER BY updated_at DESC, id DESC").fetchall()
                 return self.send_json([dict(row) for row in rows])
+            if path.startswith("/api/customers/") and path.endswith("/profile"):
+                parts = path.strip("/").split("/")
+                try:
+                    customer_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer id"}, 400)
+                profile = get_current_customer_profile(db, customer_id)
+                return self.send_json(profile or {"error": "customer profile not found"}, 200 if profile else 404)
             if path.startswith("/api/customers/") and path.endswith("/people"):
                 parts = path.strip("/").split("/")
                 try:
@@ -1480,6 +4459,19 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/semantic-assets":
                 rows = db.execute("SELECT * FROM semantic_assets ORDER BY updated_at DESC, id DESC").fetchall()
                 return self.send_json([{**dict(row), "badges": json.loads(row["badges"] or "[]"), "fields": json.loads(row["fields_json"] or "[]")} for row in rows])
+            if path.startswith("/api/semantic-assets/"):
+                try:
+                    asset_id = int(path.strip("/").split("/")[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid semantic asset id"}, 400)
+                row = db.execute("SELECT * FROM semantic_assets WHERE id = ?", (asset_id,)).fetchone()
+                if not row:
+                    return self.send_json({"error": "semantic asset not found"}, 404)
+                item = dict(row)
+                item["badges"] = json.loads(item.pop("badges") or "[]")
+                item["fields"] = json.loads(item.pop("fields_json") or "[]")
+                item["type"] = item["asset_type"]
+                return self.send_json(item)
             if path == "/api/agents":
                 agents = []
                 for row in db.execute("SELECT * FROM agents ORDER BY scene, id").fetchall():
@@ -1504,6 +4496,72 @@ class Handler(BaseHTTPRequestHandler):
         data = self.read_json()
         now = datetime.now(timezone.utc).isoformat()
         with connect() as db:
+            if path == "/api/relationship-score/config":
+                try:
+                    weights = normalize_relationship_score_weights(data)
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                description = str(data.get("description", "按五项关系因素自动计算关系强度。")).strip()
+                config = db.execute(
+                    "SELECT id FROM relationship_score_configs WHERE code = 'relationship-score-v1'"
+                ).fetchone()
+                if config:
+                    db.execute(
+                        """UPDATE relationship_score_configs
+                           SET interaction_frequency_weight = ?, recency_weight = ?,
+                               influence_weight = ?, history_weight = ?, duration_weight = ?,
+                               description = ?, status = 'active', is_default = 1, updated_at = ?
+                           WHERE id = ?""",
+                        (
+                            weights["interaction_frequency"], weights["recency"],
+                            weights["influence"], weights["history"], weights["duration"],
+                            description, now, config["id"],
+                        ),
+                    )
+                else:
+                    db.execute(
+                        """INSERT INTO relationship_score_configs
+                           (code, name, interaction_frequency_weight, recency_weight,
+                            influence_weight, history_weight, duration_weight, status,
+                            is_default, description, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?)""",
+                        (
+                            "relationship-score-v1", "关系强度自动评分 V1",
+                            weights["interaction_frequency"], weights["recency"],
+                            weights["influence"], weights["history"], weights["duration"],
+                            description, now, now,
+                        ),
+                    )
+                return self.send_json(get_relationship_score_config(db))
+            if path.startswith("/api/customer-developments/"):
+                parts = path.strip("/").split("/")
+                if len(parts) == 3:
+                    try:
+                        development_id = int(parts[2])
+                    except (IndexError, ValueError):
+                        return self.send_json({"error": "invalid customer development id"}, 400)
+                    development = db.execute(
+                        "SELECT * FROM customer_developments WHERE id = ?", (development_id,)
+                    ).fetchone()
+                    if not development:
+                        return self.send_json({"error": "customer development not found"}, 404)
+                    db.execute(
+                        """UPDATE customer_developments
+                           SET name = ?, owner = ?, status = ?, target = ?, summary = ?,
+                               next_action = ?, updated_at = ?
+                           WHERE id = ?""",
+                        (
+                            str(data.get("name", development["name"])).strip(),
+                            str(data.get("owner", development["owner"])).strip(),
+                            str(data.get("status", development["status"])).strip(),
+                            str(data.get("target", development["target"])).strip(),
+                            str(data.get("summary", development["summary"])).strip(),
+                            str(data.get("nextAction", development["next_action"])).strip(),
+                            now,
+                            development_id,
+                        ),
+                    )
+                    return self.send_json(get_customer_development(db, development_id))
             if path.startswith("/api/actions/"):
                 try:
                     action_id = int(path.strip("/").split("/")[2])
@@ -1518,21 +4576,27 @@ class Handler(BaseHTTPRequestHandler):
                 title = str(data.get("title", action["title"])).strip()
                 if not title:
                     return self.send_json({"error": "title is required"}, 400)
-                completed_at = now if status == "completed" else (
-                    action["completed_at"] if status == "completed" else None
-                )
+                try:
+                    person_id = int(data["personId"]) if data.get("personId") else action["person_id"]
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "invalid person id"}, 400)
+                if person_id and not db.execute("SELECT 1 FROM persons WHERE id = ?", (person_id,)).fetchone():
+                    return self.send_json({"error": "person not found"}, 404)
+                completed_at = now if status == "completed" else None
                 db.execute(
                     """UPDATE actions
-                       SET title = ?, description = ?, status = ?, priority = ?,
-                           assignee = ?, due_at = ?, updated_at = ?, completed_at = ?
+                       SET title = ?, description = ?, action_type = ?, status = ?, priority = ?,
+                           assignee = ?, due_at = ?, person_id = ?, updated_at = ?, completed_at = ?
                        WHERE id = ?""",
                     (
                         title,
                         str(data.get("description", action["description"])).strip(),
+                        str(data.get("actionType", action["action_type"])).strip() or "follow_up",
                         status,
                         str(data.get("priority", action["priority"])).strip() or "medium",
                         str(data.get("assignee", action["assignee"])).strip(),
                         str(data.get("dueAt", action["due_at"])).strip() if data.get("dueAt", action["due_at"]) else None,
+                        person_id,
                         now,
                         completed_at,
                         action_id,
@@ -1549,6 +4613,28 @@ class Handler(BaseHTTPRequestHandler):
                         "INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)",
                         (action["opportunity_id"], "action_updated", f"行动任务“{title}”状态更新为 {status}", now),
                     )
+                record_action_relationship_event(db, row, now)
+                if status == "completed" and action["status"] != "completed":
+                    customer_row = db.execute(
+                        """SELECT COALESCE(a.customer_id, o.customer_id, p.customer_id, cd.customer_id) AS customer_id
+                           FROM actions a
+                           LEFT JOIN opportunities o ON o.id = a.opportunity_id
+                           LEFT JOIN projects p ON p.id = a.project_id
+                           LEFT JOIN customer_developments cd ON cd.id = a.customer_development_id
+                           WHERE a.id = ?""",
+                        (action_id,),
+                    ).fetchone()
+                    if customer_row and customer_row["customer_id"]:
+                        emit_customer_profile_event(
+                            db,
+                            "action_completed",
+                            customer_row["customer_id"],
+                            "action",
+                            action_id,
+                            {"title": title, "opportunityId": action["opportunity_id"], "completedAt": completed_at},
+                            now=now,
+                            dedupe_key=f"action_completed:action:{action_id}:{completed_at}",
+                        )
                 return self.send_json(serialize_action(row))
             if path.startswith("/api/projects/") and "/parties/" in path:
                 parts = path.strip("/").split("/")
@@ -1610,11 +4696,100 @@ class Handler(BaseHTTPRequestHandler):
                     (name, organization_type, status or "active", now, organization_id),
                 )
                 return self.send_json(get_customer_organization_node(db, organization_id))
+            if path.startswith("/api/semantic-assets/"):
+                try:
+                    asset_id = int(path.strip("/").split("/")[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid semantic asset id"}, 400)
+                row = db.execute("SELECT * FROM semantic_assets WHERE id = ?", (asset_id,)).fetchone()
+                if not row:
+                    return self.send_json({"error": "semantic asset not found"}, 404)
+                category = str(data.get("category", row["category"])).strip()
+                asset_type = str(data.get("assetType", row["asset_type"])).strip() or category
+                name = str(data.get("name", row["name"])).strip()
+                description = str(data.get("description", row["description"])).strip()
+                if not category or not name or not description:
+                    return self.send_json({"error": "category, name and description are required"}, 400)
+                badges = data.get("badges", json.loads(row["badges"] or "[]"))
+                fields = data.get("fields", json.loads(row["fields_json"] or "[]"))
+                if not isinstance(fields, list):
+                    return self.send_json({"error": "fields must be an array"}, 400)
+                db.execute(
+                    """UPDATE semantic_assets
+                       SET category = ?, asset_type = ?, name = ?, description = ?,
+                           badges = ?, fields_json = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (
+                        category,
+                        asset_type,
+                        name,
+                        description,
+                        json.dumps(badges, ensure_ascii=False),
+                        json.dumps(fields, ensure_ascii=False),
+                        now,
+                        asset_id,
+                    ),
+                )
+                return self.send_json({
+                    "id": asset_id,
+                    "category": category,
+                    "assetType": asset_type,
+                    "type": asset_type,
+                    "name": name,
+                    "description": description,
+                    "badges": badges,
+                    "fields": fields,
+                    "updated_at": now,
+                })
         return self.send_json({"error": "not found"}, 404)
 
     def do_DELETE(self):
         path = urlparse(self.path).path
         with connect() as db:
+            if path.startswith("/api/customer-profiles/"):
+                parts = path.strip("/").split("/")
+                if len(parts) == 5 and parts[3] in {"projects", "opportunities", "persons", "developments"}:
+                    try:
+                        profile_id = int(parts[2])
+                        object_id = int(parts[4])
+                    except (IndexError, ValueError):
+                        return self.send_json({"error": "invalid customer profile relation id"}, 400)
+                    config = {
+                        "projects": ("customer_profile_projects", "project_id"),
+                        "opportunities": ("customer_profile_opportunities", "opportunity_id"),
+                        "persons": ("customer_profile_persons", "person_id"),
+                        "developments": ("customer_profile_developments", "customer_development_id"),
+                    }[parts[3]]
+                    table, object_column = config
+                    cur = db.execute(
+                        f"DELETE FROM {table} WHERE profile_id = ? AND {object_column} = ?",
+                        (profile_id, object_id),
+                    )
+                    if not cur.rowcount:
+                        return self.send_json({"error": "customer profile relation not found"}, 404)
+                    return self.send_json(get_customer_profile(db, profile_id))
+            if path.startswith("/api/customer-developments/"):
+                parts = path.strip("/").split("/")
+                if len(parts) == 5 and parts[3] in {"opportunities", "projects"}:
+                    try:
+                        development_id = int(parts[2])
+                        object_id = int(parts[4])
+                    except (ValueError, IndexError):
+                        return self.send_json({"error": "invalid customer development relation id"}, 400)
+                    table = "customer_development_opportunities" if parts[3] == "opportunities" else "customer_development_projects"
+                    object_column = "opportunity_id" if parts[3] == "opportunities" else "project_id"
+                    cur = db.execute(
+                        f"DELETE FROM {table} WHERE customer_development_id = ? AND {object_column} = ?",
+                        (development_id, object_id),
+                    )
+                    if not cur.rowcount:
+                        return self.send_json({"error": "customer development relation not found"}, 404)
+                    return self.send_json({
+                        "status": "deleted",
+                        "customerDevelopmentId": development_id,
+                        "objectId": object_id,
+                        "objectType": parts[3][:-1],
+                    })
             if path.startswith("/api/projects/") and "/parties/" in path:
                 parts = path.strip("/").split("/")
                 try:
@@ -1629,6 +4804,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not cur.rowcount:
                     return self.send_json({"error": "project party not found"}, 404)
                 return self.send_json({"status": "deleted", "projectId": project_id, "partyId": party_id})
+            if path.startswith("/api/semantic-assets/"):
+                try:
+                    asset_id = int(path.strip("/").split("/")[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid semantic asset id"}, 400)
+                cur = db.execute("DELETE FROM semantic_assets WHERE id = ?", (asset_id,))
+                if not cur.rowcount:
+                    return self.send_json({"error": "semantic asset not found"}, 404)
+                return self.send_json({"status": "deleted", "id": asset_id})
         return self.send_json({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -1636,6 +4820,821 @@ class Handler(BaseHTTPRequestHandler):
         data = self.read_json()
         now = datetime.now(timezone.utc).isoformat()
         with connect() as db:
+            if path == "/api/customer-profile-scoring/models":
+                model_code = str(data.get("modelCode", "")).strip()
+                name = str(data.get("name", "")).strip()
+                version_no = str(data.get("versionNo", "")).strip()
+                if not model_code or not name or not version_no:
+                    return self.send_json({"error": "modelCode, name and versionNo are required"}, 400)
+                try:
+                    cur = db.execute(
+                        """INSERT INTO customer_profile_scoring_models
+                           (model_code, name, version_no, status, target_scope, description, is_default, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (model_code, name, version_no, str(data.get("status", "draft")), str(data.get("targetScope", "customer_profile")), str(data.get("description", "")), int(bool(data.get("isDefault"))), now, now),
+                    )
+                except sqlite3.IntegrityError:
+                    return self.send_json({"error": "scoring model version already exists"}, 409)
+                return self.send_json(get_customer_profile_scoring_model(db, cur.lastrowid, active_only=False), 201)
+            if path.startswith("/api/customer-profile-scoring/models/") and path.endswith("/dimensions"):
+                try:
+                    model_id = int(path.strip("/").split("/")[3])
+                    weight = float(data.get("weight", 0))
+                    score_min = int(data.get("scoreMin", 0))
+                    score_max = int(data.get("scoreMax", 100))
+                except (IndexError, TypeError, ValueError):
+                    return self.send_json({"error": "invalid scoring dimension payload"}, 400)
+                dimension_code = str(data.get("dimensionCode", "")).strip()
+                name = str(data.get("name", "")).strip()
+                if not dimension_code or not name or not 0 <= score_min <= score_max:
+                    return self.send_json({"error": "dimensionCode, name and score range are required"}, 400)
+                if not db.execute("SELECT id FROM customer_profile_scoring_models WHERE id = ?", (model_id,)).fetchone():
+                    return self.send_json({"error": "scoring model not found"}, 404)
+                db.execute(
+                    """INSERT INTO customer_profile_scoring_dimensions
+                       (model_id, dimension_code, name, calculation_type, weight, score_min, score_max,
+                        source_fact_codes_json, source_metrics_json, config_json, enabled, sort_order, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(model_id, dimension_code) DO UPDATE SET
+                         name = excluded.name, calculation_type = excluded.calculation_type,
+                         weight = excluded.weight, score_min = excluded.score_min, score_max = excluded.score_max,
+                         source_fact_codes_json = excluded.source_fact_codes_json,
+                         source_metrics_json = excluded.source_metrics_json, config_json = excluded.config_json,
+                         enabled = excluded.enabled, sort_order = excluded.sort_order, updated_at = excluded.updated_at""",
+                    (model_id, dimension_code, name, str(data.get("calculationType", "rules")), weight, score_min, score_max, json.dumps(data.get("sourceFactCodes") or [], ensure_ascii=False), json.dumps(data.get("sourceMetrics") or [], ensure_ascii=False), json.dumps(data.get("config") or {}, ensure_ascii=False), int(bool(data.get("enabled", True))), int(data.get("sortOrder", 0) or 0), now, now),
+                )
+                return self.send_json(get_customer_profile_scoring_model(db, model_id, active_only=False), 201)
+            if path.startswith("/api/customer-profile-scoring/models/") and path.endswith("/rules"):
+                try:
+                    model_id = int(path.strip("/").split("/")[3])
+                    score = float(data.get("score", 0))
+                    priority = int(data.get("priority", 0))
+                except (IndexError, TypeError, ValueError):
+                    return self.send_json({"error": "invalid scoring rule payload"}, 400)
+                rule_code = str(data.get("ruleCode", "")).strip()
+                name = str(data.get("name", "")).strip()
+                condition = data.get("condition") or {}
+                dimension_code = str(data.get("dimensionCode", "")).strip()
+                if not rule_code or not name or not dimension_code or not isinstance(condition, dict):
+                    return self.send_json({"error": "ruleCode, name, dimensionCode and condition are required"}, 400)
+                dimension = db.execute("SELECT id FROM customer_profile_scoring_dimensions WHERE model_id = ? AND dimension_code = ?", (model_id, dimension_code)).fetchone()
+                if not dimension:
+                    return self.send_json({"error": "scoring dimension not found"}, 404)
+                db.execute(
+                    """INSERT INTO customer_profile_scoring_rules
+                       (model_id, dimension_id, rule_code, name, condition_json, score, priority, explanation, config_json, enabled, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(model_id, rule_code) DO UPDATE SET
+                         dimension_id = excluded.dimension_id, name = excluded.name,
+                         condition_json = excluded.condition_json, score = excluded.score,
+                         priority = excluded.priority, explanation = excluded.explanation,
+                         config_json = excluded.config_json, enabled = excluded.enabled, updated_at = excluded.updated_at""",
+                    (model_id, dimension["id"], rule_code, name, json.dumps(condition, ensure_ascii=False), score, priority, str(data.get("explanation", "")), json.dumps(data.get("config") or {}, ensure_ascii=False), int(bool(data.get("enabled", True))), now, now),
+                )
+                return self.send_json(get_customer_profile_scoring_model(db, model_id, active_only=False), 201)
+            if path.startswith("/api/customer-profile-scoring/models/") and path.endswith("/publish"):
+                try:
+                    model_id = int(path.strip("/").split("/")[3])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid scoring model id"}, 400)
+                model = db.execute("SELECT * FROM customer_profile_scoring_models WHERE id = ?", (model_id,)).fetchone()
+                if not model:
+                    return self.send_json({"error": "scoring model not found"}, 404)
+                if not db.execute("SELECT 1 FROM customer_profile_scoring_dimensions WHERE model_id = ? AND enabled = 1", (model_id,)).fetchone():
+                    return self.send_json({"error": "at least one enabled scoring dimension is required"}, 409)
+                db.execute("UPDATE customer_profile_scoring_models SET status = 'retired', is_default = 0, updated_at = ? WHERE model_code = ? AND id <> ? AND status = 'active'", (now, model["model_code"], model_id))
+                if data.get("isDefault", True):
+                    db.execute("UPDATE customer_profile_scoring_models SET is_default = 0, updated_at = ? WHERE id <> ?", (now, model_id))
+                db.execute("UPDATE customer_profile_scoring_models SET status = 'active', is_default = ?, published_at = ?, updated_at = ? WHERE id = ?", (int(bool(data.get("isDefault", True))), now, now, model_id))
+                return self.send_json(get_customer_profile_scoring_model(db, model_id, active_only=False), 200)
+            if path.startswith("/api/relationship-service/relationships/") and path.endswith("/calculate-strength"):
+                parts = path.strip("/").split("/")
+                try:
+                    relationship_id = int(parts[3])
+                    result = RelationshipService(db, now).calculate_strength(relationship_id, data)
+                except (IndexError, ValueError) as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result, 201)
+            if path.startswith("/api/relationship-service/relationships/") and path.endswith("/record-change"):
+                parts = path.strip("/").split("/")
+                try:
+                    relationship_id = int(parts[3])
+                    result = RelationshipService(db, now).record_change(relationship_id, data)
+                except (IndexError, ValueError) as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result, 201)
+            if path == "/api/relationships":
+                source = data.get("sourceEntity") or {}
+                target = data.get("targetEntity") or {}
+                source_type = data.get("sourceEntityType") or source.get("type")
+                source_ref_id = data.get("sourceEntityRefId") or source.get("refId")
+                target_type = data.get("targetEntityType") or target.get("type")
+                target_ref_id = data.get("targetEntityRefId") or target.get("refId")
+                try:
+                    relationship_type_id = data.get("relationshipTypeId")
+                    if relationship_type_id not in (None, ""):
+                        relationship_type_id = int(relationship_type_id)
+                        type_row = relationship_type_row(db, type_id=relationship_type_id)
+                    else:
+                        type_row = relationship_type_row(db, code=str(data.get("relationshipTypeCode", "")).strip())
+                    if not type_row:
+                        return self.send_json({"error": "relationship type not found"}, 404)
+                    if source_type != type_row["source_entity_type"] or target_type != type_row["target_entity_type"]:
+                        return self.send_json({
+                            "error": "relationship entity types do not match relationship type",
+                            "expected": {
+                                "sourceEntityType": type_row["source_entity_type"],
+                                "targetEntityType": type_row["target_entity_type"],
+                            },
+                        }, 409)
+                    source_entity = ensure_relationship_entity(
+                        db, source_type, source_ref_id, source.get("name"), source.get("metadata"), now
+                    )
+                    target_entity = ensure_relationship_entity(
+                        db, target_type, target_ref_id, target.get("name"), target.get("metadata"), now
+                    )
+                    relationship = upsert_relationship(
+                        db, source_entity["id"], target_entity["id"], type_row["id"], data, now
+                    )
+                    return self.send_json(calculate_relationship_strength_auto(db, relationship["id"], now), 201)
+                except (TypeError, ValueError) as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+            if path.startswith("/api/relationships/") and path.endswith("/scores"):
+                parts = path.strip("/").split("/")
+                if str(data.get("mode", "")).strip().lower() == "auto" or data.get("score") in (None, ""):
+                    try:
+                        relationship_id = int(parts[2])
+                        return self.send_json(
+                            calculate_relationship_strength_auto(db, relationship_id, now),
+                            201,
+                        )
+                    except (IndexError, ValueError) as exc:
+                        return self.send_json({"error": str(exc)}, 400)
+                    except LookupError as exc:
+                        return self.send_json({"error": str(exc)}, 404)
+                try:
+                    relationship_id = int(parts[2])
+                    score = float(data.get("score"))
+                except (IndexError, TypeError, ValueError):
+                    return self.send_json({"error": "relationship id and numeric score are required"}, 400)
+                if not 0 <= score <= 100:
+                    return self.send_json({"error": "score must be between 0 and 100"}, 400)
+                relationship = db.execute("SELECT * FROM relationships WHERE id = ?", (relationship_id,)).fetchone()
+                if not relationship:
+                    return self.send_json({"error": "relationship not found"}, 404)
+                score = round(score, 2)
+                calculated_at = data.get("calculatedAt") or now
+                db.execute(
+                    """INSERT INTO relationship_scores
+                       (relationship_id, score, level, interaction_frequency_score,
+                        recency_score, influence_score, history_score, reason,
+                        calculated_by, calculated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        relationship_id,
+                        score,
+                        str(data.get("level") or relationship_score_level(score)),
+                        data.get("interactionFrequencyScore"),
+                        data.get("recencyScore"),
+                        data.get("influenceScore"),
+                        data.get("historyScore"),
+                        str(data.get("reason", "")).strip(),
+                        str(data.get("calculatedBy", "manual")).strip() or "manual",
+                        calculated_at,
+                    ),
+                )
+                db.execute(
+                    """UPDATE relationships
+                       SET strength_score = ?, strength_level = ?, last_evaluated_at = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (score, str(data.get("level") or relationship_score_level(score)), calculated_at, now, relationship_id),
+                )
+                return self.send_json(get_relationship_detail(db, relationship_id), 201)
+            if path.startswith("/api/relationships/") and path.endswith("/events"):
+                parts = path.strip("/").split("/")
+                try:
+                    relationship_id = int(parts[2])
+                except (IndexError, TypeError, ValueError):
+                    return self.send_json({"error": "invalid relationship id"}, 400)
+                try:
+                    return self.send_json(RelationshipService(db, now).record_change(relationship_id, data), 201)
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path.startswith("/api/customer-profile-events/") and path.endswith("/process"):
+                try:
+                    event_id = int(path.strip("/").split("/")[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer profile event id"}, 400)
+                event = db.execute("SELECT id FROM customer_profile_events WHERE id = ?", (event_id,)).fetchone()
+                if not event:
+                    return self.send_json({"error": "customer profile event not found"}, 404)
+                return self.send_json(process_customer_profile_event(db, event_id, now=now, force=True), 200)
+            if path == "/api/customer-profile-events":
+                event_type = str(data.get("eventType", "")).strip()
+                source_object_type = str(data.get("sourceObjectType", "")).strip()
+                source_object_id = str(data.get("sourceObjectId", "")).strip()
+                if event_type not in CUSTOMER_PROFILE_EVENT_TYPES:
+                    return self.send_json({"error": "unsupported customer profile event type"}, 400)
+                if not source_object_type or not source_object_id:
+                    return self.send_json({"error": "sourceObjectType and sourceObjectId are required"}, 400)
+                try:
+                    profile_id = int(data.get("profileId")) if data.get("profileId") else None
+                    customer_id = int(data.get("customerId")) if data.get("customerId") else None
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "profileId or customerId must be numeric"}, 400)
+                if profile_id:
+                    profile = db.execute("SELECT * FROM customer_profiles WHERE id = ?", (profile_id,)).fetchone()
+                    if not profile:
+                        return self.send_json({"error": "customer profile not found"}, 404)
+                    customer_id = profile["customer_id"]
+                if not customer_id:
+                    return self.send_json({"error": "profileId or customerId is required"}, 400)
+                try:
+                    result = emit_customer_profile_event(
+                        db,
+                        event_type,
+                        customer_id,
+                        source_object_type,
+                        source_object_id,
+                        data.get("payload") or {},
+                        now=data.get("occurredAt") or now,
+                        process=bool(data.get("process", True)),
+                        dedupe_key=str(data.get("dedupeKey") or "").strip() or None,
+                    )
+                except ValueError as error:
+                    return self.send_json({"error": str(error)}, 400)
+                return self.send_json(result, 201)
+            if path == "/api/customer-fact-extraction/run":
+                try:
+                    profile_id = int(data.get("profileId")) if data.get("profileId") else None
+                    customer_id = int(data.get("customerId")) if data.get("customerId") else None
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "profileId or customerId must be numeric"}, 400)
+                if not profile_id and customer_id:
+                    current_profile = get_current_customer_profile(db, customer_id)
+                    profile_id = current_profile["id"] if current_profile else None
+                if not profile_id:
+                    return self.send_json({"error": "profileId or an active customer profile is required"}, 400)
+                source_types = data.get("sourceTypes")
+                if source_types is not None and not isinstance(source_types, list):
+                    return self.send_json({"error": "sourceTypes must be an array"}, 400)
+                try:
+                    result = run_customer_fact_extraction(
+                        db,
+                        profile_id,
+                        source_types=source_types,
+                        dry_run=bool(data.get("dryRun", False)),
+                        trigger_type=str(data.get("triggerType", "manual")).strip() or "manual",
+                        now=now,
+                    )
+                except ValueError as error:
+                    return self.send_json({"error": str(error)}, 400)
+                return self.send_json(result, 201)
+            if path == "/api/customer-profiles":
+                try:
+                    customer_id = int(data.get("customerId"))
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "customerId is required"}, 400)
+                if not db.execute("SELECT 1 FROM customers WHERE id = ?", (customer_id,)).fetchone():
+                    return self.send_json({"error": "customer not found"}, 404)
+                organization_id = data.get("customerOrganizationId")
+                if organization_id is not None and organization_id != "":
+                    try:
+                        organization_id = int(organization_id)
+                    except (TypeError, ValueError):
+                        return self.send_json({"error": "invalid customer organization id"}, 400)
+                    if not db.execute(
+                        "SELECT 1 FROM customer_organizations WHERE id = ? AND customer_id = ?",
+                        (organization_id, customer_id),
+                    ).fetchone():
+                        return self.send_json({"error": "customer organization does not belong to customer"}, 409)
+                else:
+                    organization_id = None
+                profile_type = str(data.get("profileType", "account_profile")).strip() or "account_profile"
+                scope_type = str(data.get("scopeType", "customer")).strip() or "customer"
+                status = str(data.get("status", "active")).strip() or "active"
+                if status not in {"draft", "active", "archived"}:
+                    return self.send_json({"error": "invalid customer profile status"}, 400)
+                version_no = db.execute(
+                    """SELECT COALESCE(MAX(version_no), 0) + 1
+                       FROM customer_profiles
+                       WHERE customer_id = ? AND customer_organization_id IS ?""",
+                    (customer_id, organization_id),
+                ).fetchone()[0]
+                if status == "active":
+                    db.execute(
+                        """UPDATE customer_profiles SET status = 'archived', updated_at = ?
+                           WHERE customer_id = ? AND customer_organization_id IS ? AND status = 'active'""",
+                        (now, customer_id, organization_id),
+                    )
+                cur = db.execute(
+                    """INSERT INTO customer_profiles
+                       (customer_id, customer_organization_id, profile_type, version_no, scope_type,
+                        status, profile_period_start, profile_period_end, completeness_score,
+                        confidence_score, source_agent_id, source_agent_run_id, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        customer_id,
+                        organization_id,
+                        profile_type,
+                        version_no,
+                        scope_type,
+                        status,
+                        data.get("profilePeriodStart"),
+                        data.get("profilePeriodEnd"),
+                        data.get("completenessScore"),
+                        data.get("confidenceScore"),
+                        data.get("sourceAgentId"),
+                        data.get("sourceAgentRunId"),
+                        now,
+                        now,
+                    ),
+                )
+                return self.send_json(get_customer_profile(db, cur.lastrowid), 201)
+            if path.startswith("/api/customer-profiles/"):
+                parts = path.strip("/").split("/")
+                try:
+                    profile_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer profile id"}, 400)
+                profile = db.execute("SELECT * FROM customer_profiles WHERE id = ?", (profile_id,)).fetchone()
+                if not profile:
+                    return self.send_json({"error": "customer profile not found"}, 404)
+                if len(parts) == 5 and parts[3] == "scores" and parts[4] == "recalculate":
+                    try:
+                        model_id = int(data.get("modelId")) if data.get("modelId") else None
+                    except (TypeError, ValueError):
+                        return self.send_json({"error": "modelId must be numeric"}, 400)
+                    try:
+                        scores = recalculate_customer_profile_scores(
+                            db,
+                            profile_id,
+                            now,
+                            model_id=model_id,
+                            model_code=str(data.get("modelCode", "")).strip() or None,
+                            version_no=str(data.get("versionNo", "")).strip() or None,
+                        )
+                    except ValueError as error:
+                        return self.send_json({"error": str(error)}, 409)
+                    selected_model = get_customer_profile_scoring_model(
+                        db,
+                        model_id,
+                        str(data.get("modelCode", "")).strip() or None,
+                        str(data.get("versionNo", "")).strip() or None,
+                    )
+                    return self.send_json({"profileId": profile_id, "scores": scores, "model": selected_model}, 201)
+                if len(parts) == 5 and parts[3] == "fact-extraction" and parts[4] == "run":
+                    source_types = data.get("sourceTypes")
+                    if source_types is not None and not isinstance(source_types, list):
+                        return self.send_json({"error": "sourceTypes must be an array"}, 400)
+                    try:
+                        result = run_customer_fact_extraction(
+                            db,
+                            profile_id,
+                            source_types=source_types,
+                            dry_run=bool(data.get("dryRun", False)),
+                            trigger_type=str(data.get("triggerType", "manual")).strip() or "manual",
+                            now=now,
+                        )
+                    except ValueError as error:
+                        return self.send_json({"error": str(error)}, 400)
+                    return self.send_json(result, 201)
+                if len(parts) == 5 and parts[3] == "summaries" and parts[4] == "generate":
+                    return self.send_json(generate_customer_profile_summary(db, profile_id, now), 201)
+                if len(parts) != 4:
+                    return self.send_json({"error": "unsupported customer profile operation"}, 404)
+                relation = parts[3]
+                if relation == "facts":
+                    fact_code = str(data.get("factCode", "")).strip()
+                    if not fact_code:
+                        return self.send_json({"error": "factCode is required"}, 400)
+                    definition = next((item for item in PROFILE_FACT_DEFINITIONS if item[0] == fact_code), None)
+                    fact_name = str(data.get("factName") or (definition[1] if definition else fact_code)).strip()
+                    value = data.get("value")
+                    if value is None:
+                        return self.send_json({"error": "value is required"}, 400)
+                    db.execute(
+                        """INSERT INTO customer_profile_facts
+                           (profile_id, fact_code, fact_name, category, value_type, value_json, unit,
+                            confidence, source_type, source_id, observed_at, valid_from, valid_to, status,
+                            created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(profile_id, fact_code) DO UPDATE SET
+                             fact_name = excluded.fact_name, category = excluded.category,
+                             value_type = excluded.value_type, value_json = excluded.value_json,
+                             unit = excluded.unit, confidence = excluded.confidence,
+                             source_type = excluded.source_type, source_id = excluded.source_id,
+                             observed_at = excluded.observed_at, valid_from = excluded.valid_from,
+                             valid_to = excluded.valid_to, status = excluded.status,
+                             updated_at = excluded.updated_at""",
+                        (
+                            profile_id,
+                            fact_code,
+                            fact_name,
+                            str(data.get("category") or (definition[2] if definition else "general")),
+                            str(data.get("valueType") or (definition[3] if definition else "text")),
+                            json.dumps(value, ensure_ascii=False),
+                            str(data.get("unit", "")).strip(),
+                            data.get("confidence"),
+                            str(data.get("sourceType", "manual")).strip() or "manual",
+                            str(data.get("sourceId", "")).strip(),
+                            data.get("observedAt") or now,
+                            data.get("validFrom"),
+                            data.get("validTo"),
+                            str(data.get("status", "active")).strip() or "active",
+                            now,
+                            now,
+                        ),
+                    )
+                    db.execute("UPDATE customer_profiles SET updated_at = ? WHERE id = ?", (now, profile_id))
+                    return self.send_json(get_customer_profile(db, profile_id), 201)
+                if relation == "scores":
+                    score_type = str(data.get("scoreType", "")).strip()
+                    try:
+                        score = float(data.get("score"))
+                    except (TypeError, ValueError):
+                        return self.send_json({"error": "scoreType and numeric score are required"}, 400)
+                    if not score_type or not 0 <= score <= 100:
+                        return self.send_json({"error": "score must be between 0 and 100"}, 400)
+                    db.execute(
+                        """INSERT INTO customer_profile_scores
+                           (profile_id, score_type, score, level, dimensions_json, scoring_rule_version,
+                            reason, source_agent_id, source_agent_run_id, assessed_at, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            profile_id,
+                            score_type,
+                            score,
+                            str(data.get("level") or profile_score_level(score)),
+                            json.dumps(data.get("dimensions") or {}, ensure_ascii=False),
+                            str(data.get("scoringRuleVersion", "customer-profile-v1")).strip(),
+                            str(data.get("reason", "")).strip(),
+                            data.get("sourceAgentId"),
+                            data.get("sourceAgentRunId"),
+                            data.get("assessedAt") or now,
+                            now,
+                        ),
+                    )
+                    db.execute("UPDATE customer_profiles SET updated_at = ?, last_assessed_at = ? WHERE id = ?", (now, now, profile_id))
+                    return self.send_json(get_customer_profile(db, profile_id), 201)
+                if relation == "summaries":
+                    title = str(data.get("title", "")).strip()
+                    content = str(data.get("content", "")).strip()
+                    if not title or not content:
+                        return self.send_json({"error": "title and content are required"}, 400)
+                    db.execute(
+                        """INSERT INTO customer_profile_summaries
+                           (profile_id, summary_type, title, content, structured_json,
+                            generated_by_agent_id, generated_by_agent_run_id, model_name,
+                            prompt_version, status, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            profile_id,
+                            str(data.get("summaryType", "executive_summary")).strip() or "executive_summary",
+                            title,
+                            content,
+                            json.dumps(data.get("structured") or {}, ensure_ascii=False),
+                            data.get("generatedByAgentId"),
+                            data.get("generatedByAgentRunId"),
+                            str(data.get("modelName", "manual")).strip() or "manual",
+                            str(data.get("promptVersion", "")).strip(),
+                            str(data.get("status", "draft")).strip() or "draft",
+                            now,
+                            now,
+                        ),
+                    )
+                    db.execute("UPDATE customer_profiles SET updated_at = ? WHERE id = ?", (now, profile_id))
+                    return self.send_json(get_customer_profile(db, profile_id), 201)
+                if relation == "evidences":
+                    evidence_text = str(data.get("evidenceText", "")).strip()
+                    if not evidence_text:
+                        return self.send_json({"error": "evidenceText is required"}, 400)
+                    db.execute(
+                        """INSERT INTO customer_profile_evidences
+                           (profile_id, evidence_type, source_object_type, source_object_id,
+                            evidence_text, evidence_json, confidence, observed_at,
+                            extracted_by_agent_id, extracted_by_agent_run_id, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            profile_id,
+                            str(data.get("evidenceType", "observation")).strip() or "observation",
+                            str(data.get("sourceObjectType", "")).strip(),
+                            str(data.get("sourceObjectId", "")).strip(),
+                            evidence_text,
+                            json.dumps(data.get("evidence") or {}, ensure_ascii=False),
+                            data.get("confidence"),
+                            data.get("observedAt") or now,
+                            data.get("extractedByAgentId"),
+                            data.get("extractedByAgentRunId"),
+                            now,
+                        ),
+                    )
+                    db.execute("UPDATE customer_profiles SET updated_at = ? WHERE id = ?", (now, profile_id))
+                    return self.send_json(get_customer_profile(db, profile_id), 201)
+                relation_config = {
+                    "projects": ("customer_profile_projects", "project_id", "projects", "id", "relation_type, importance, notes"),
+                    "opportunities": ("customer_profile_opportunities", "opportunity_id", "opportunities", "id", "relation_type, importance, notes"),
+                    "persons": ("customer_profile_persons", "person_id", "persons", "id", "relation_type, influence_level, relationship_health, notes"),
+                    "developments": ("customer_profile_developments", "customer_development_id", "customer_developments", "id", "relation_type, relevance_score, notes"),
+                }
+                if relation not in relation_config:
+                    return self.send_json({"error": "unsupported customer profile relation"}, 404)
+                table, object_column, object_table, object_id_column, _ = relation_config[relation]
+                body_key = {
+                    "projects": "projectId",
+                    "opportunities": "opportunityId",
+                    "persons": "personId",
+                    "developments": "customerDevelopmentId",
+                }[relation]
+                try:
+                    object_id = int(data.get(body_key))
+                except (TypeError, ValueError):
+                    return self.send_json({"error": f"{body_key} is required"}, 400)
+                object_row = db.execute(
+                    f"SELECT * FROM {object_table} WHERE {object_id_column} = ?", (object_id,)
+                ).fetchone()
+                if not object_row:
+                    return self.send_json({"error": f"{relation[:-1]} not found"}, 404)
+                if relation == "persons":
+                    belongs_to_customer = db.execute(
+                        "SELECT 1 FROM customer_persons WHERE customer_id = ? AND person_id = ?",
+                        (profile["customer_id"], object_id),
+                    ).fetchone()
+                else:
+                    belongs_to_customer = object_row["customer_id"] == profile["customer_id"]
+                if not belongs_to_customer:
+                    return self.send_json({"error": "related object does not belong to profile customer"}, 409)
+                if relation == "projects":
+                    values = (profile_id, object_id, str(data.get("relationType", "重点项目")).strip() or "重点项目", data.get("importance"), str(data.get("notes", "")).strip(), now, now)
+                    sql = f"""INSERT INTO {table} (profile_id, {object_column}, relation_type, importance, notes, created_at, updated_at)
+                              VALUES (?, ?, ?, ?, ?, ?, ?)
+                              ON CONFLICT(profile_id, {object_column}) DO UPDATE SET relation_type = excluded.relation_type, importance = excluded.importance, notes = excluded.notes, updated_at = excluded.updated_at"""
+                elif relation == "opportunities":
+                    values = (profile_id, object_id, str(data.get("relationType", "重点商机")).strip() or "重点商机", data.get("importance"), str(data.get("notes", "")).strip(), now, now)
+                    sql = f"""INSERT INTO {table} (profile_id, {object_column}, relation_type, importance, notes, created_at, updated_at)
+                              VALUES (?, ?, ?, ?, ?, ?, ?)
+                              ON CONFLICT(profile_id, {object_column}) DO UPDATE SET relation_type = excluded.relation_type, importance = excluded.importance, notes = excluded.notes, updated_at = excluded.updated_at"""
+                elif relation == "persons":
+                    values = (profile_id, object_id, str(data.get("relationType", "关键人")).strip() or "关键人", str(data.get("influenceLevel", "medium")).strip() or "medium", str(data.get("relationshipHealth", "unknown")).strip() or "unknown", str(data.get("notes", "")).strip(), now, now)
+                    sql = f"""INSERT INTO {table} (profile_id, {object_column}, relation_type, influence_level, relationship_health, notes, created_at, updated_at)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                              ON CONFLICT(profile_id, {object_column}) DO UPDATE SET relation_type = excluded.relation_type, influence_level = excluded.influence_level, relationship_health = excluded.relationship_health, notes = excluded.notes, updated_at = excluded.updated_at"""
+                else:
+                    values = (profile_id, object_id, str(data.get("relationType", "客户开发主线")).strip() or "客户开发主线", data.get("relevanceScore"), str(data.get("notes", "")).strip(), now, now)
+                    sql = f"""INSERT INTO {table} (profile_id, {object_column}, relation_type, relevance_score, notes, created_at, updated_at)
+                              VALUES (?, ?, ?, ?, ?, ?, ?)
+                              ON CONFLICT(profile_id, {object_column}) DO UPDATE SET relation_type = excluded.relation_type, relevance_score = excluded.relevance_score, notes = excluded.notes, updated_at = excluded.updated_at"""
+                db.execute(sql, values)
+                db.execute("UPDATE customer_profiles SET updated_at = ? WHERE id = ?", (now, profile_id))
+                return self.send_json(get_customer_profile(db, profile_id), 201)
+            if path == "/api/customer-developments":
+                try:
+                    customer_id = int(data.get("customerId"))
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "customerId is required"}, 400)
+                customer = db.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
+                if not customer:
+                    return self.send_json({"error": "customer not found"}, 404)
+                organization_id = data.get("customerOrganizationId")
+                if organization_id:
+                    try:
+                        organization_id = int(organization_id)
+                    except (TypeError, ValueError):
+                        return self.send_json({"error": "invalid customer organization id"}, 400)
+                    if not db.execute(
+                        "SELECT 1 FROM customer_organizations WHERE id = ? AND customer_id = ?",
+                        (organization_id, customer_id),
+                    ).fetchone():
+                        return self.send_json({"error": "customer organization does not belong to customer"}, 409)
+                name = str(data.get("name") or f"{customer['name']}客户开发").strip()
+                if not name:
+                    return self.send_json({"error": "name is required"}, 400)
+                stage = customer_development_stage(data.get("stageCode", "AT1"))
+                if not stage:
+                    return self.send_json({"error": "invalid customer development stage"}, 400)
+                cur = db.execute(
+                    """INSERT INTO customer_developments
+                       (customer_id, customer_organization_id, name, owner, current_stage_code,
+                        current_stage_name, target, summary, next_action, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        customer_id,
+                        organization_id,
+                        name,
+                        str(data.get("owner", "")).strip(),
+                        stage["code"],
+                        stage["name"],
+                        str(data.get("target", "")).strip(),
+                        str(data.get("summary", "")).strip(),
+                        str(data.get("nextAction", "")).strip(),
+                        now,
+                        now,
+                    ),
+                )
+                development_id = cur.lastrowid
+                db.execute(
+                    """INSERT INTO customer_development_stage_records
+                       (customer_development_id, stage_code, stage_name, status, required_json,
+                        started_at, created_at, updated_at)
+                       VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?)""",
+                    (development_id, stage["code"], stage["name"], "{}", now, now, now),
+                )
+                return self.send_json(get_customer_development(db, development_id), 201)
+            if path.startswith("/api/customer-developments/") and path.endswith("/opportunities"):
+                parts = path.strip("/").split("/")
+                try:
+                    development_id = int(parts[2])
+                    opportunity_id = int(data.get("opportunityId"))
+                except (IndexError, TypeError, ValueError):
+                    return self.send_json({"error": "development id and opportunityId are required"}, 400)
+                development = db.execute(
+                    "SELECT * FROM customer_developments WHERE id = ?", (development_id,)
+                ).fetchone()
+                opportunity = db.execute(
+                    "SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)
+                ).fetchone()
+                if not development:
+                    return self.send_json({"error": "customer development not found"}, 404)
+                if not opportunity:
+                    return self.send_json({"error": "opportunity not found"}, 404)
+                if opportunity["customer_id"] != development["customer_id"]:
+                    return self.send_json({"error": "opportunity does not belong to customer development customer"}, 409)
+                db.execute(
+                    """INSERT INTO customer_development_opportunities
+                       (customer_development_id, opportunity_id, relation_type, notes, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(customer_development_id, opportunity_id)
+                       DO UPDATE SET relation_type = excluded.relation_type,
+                                     notes = excluded.notes, updated_at = excluded.updated_at""",
+                    (
+                        development_id,
+                        opportunity_id,
+                        str(data.get("relationType", "重点商机")).strip() or "重点商机",
+                        str(data.get("notes", "")).strip(),
+                        now,
+                        now,
+                    ),
+                )
+                return self.send_json(get_customer_development(db, development_id), 201)
+            if path.startswith("/api/customer-developments/") and path.endswith("/projects"):
+                parts = path.strip("/").split("/")
+                try:
+                    development_id = int(parts[2])
+                    project_id = int(data.get("projectId"))
+                except (IndexError, TypeError, ValueError):
+                    return self.send_json({"error": "development id and projectId are required"}, 400)
+                development = db.execute(
+                    "SELECT * FROM customer_developments WHERE id = ?", (development_id,)
+                ).fetchone()
+                project = db.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+                if not development:
+                    return self.send_json({"error": "customer development not found"}, 404)
+                if not project:
+                    return self.send_json({"error": "project not found"}, 404)
+                if project["customer_id"] != development["customer_id"]:
+                    return self.send_json({"error": "project does not belong to customer development customer"}, 409)
+                db.execute(
+                    """INSERT INTO customer_development_projects
+                       (customer_development_id, project_id, relation_type, notes, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(customer_development_id, project_id)
+                       DO UPDATE SET relation_type = excluded.relation_type,
+                                     notes = excluded.notes, updated_at = excluded.updated_at""",
+                    (
+                        development_id,
+                        project_id,
+                        str(data.get("relationType", "重点项目")).strip() or "重点项目",
+                        str(data.get("notes", "")).strip(),
+                        now,
+                        now,
+                    ),
+                )
+                return self.send_json(get_customer_development(db, development_id), 201)
+            if path.startswith("/api/customer-developments/") and path.endswith("/stage"):
+                parts = path.strip("/").split("/")
+                try:
+                    development_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer development id"}, 400)
+                development = db.execute(
+                    "SELECT * FROM customer_developments WHERE id = ?", (development_id,)
+                ).fetchone()
+                if not development:
+                    return self.send_json({"error": "customer development not found"}, 404)
+                target = customer_development_stage(data.get("stageCode"))
+                if not target:
+                    return self.send_json({"error": "invalid customer development stage"}, 400)
+                current = customer_development_stage(development["current_stage_code"])
+                if current and target["sequence"] != current["sequence"] + 1:
+                    return self.send_json({"error": "customer development stages must advance sequentially"}, 409)
+                required = data.get("required") or {}
+                missing = [key for key in target["required"] if not str(required.get(key, "")).strip()]
+                if missing:
+                    return self.send_json({"error": "required fields are missing", "missing": missing}, 400)
+                db.execute(
+                    """UPDATE customer_development_stage_records
+                       SET status = 'completed', required_json = ?, completed_at = ?, updated_at = ?
+                       WHERE customer_development_id = ? AND stage_code = ?""",
+                    (json.dumps(required, ensure_ascii=False), now, now, development_id, development["current_stage_code"]),
+                )
+                db.execute(
+                    """INSERT INTO customer_development_stage_records
+                       (customer_development_id, stage_code, stage_name, status, required_json,
+                        started_at, created_at, updated_at)
+                       VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?)""",
+                    (development_id, target["code"], target["name"], "{}", now, now, now),
+                )
+                db.execute(
+                    """UPDATE customer_developments
+                       SET current_stage_code = ?, current_stage_name = ?, next_action = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (target["code"], target["name"], str(data.get("nextAction", "")).strip(), now, development_id),
+                )
+                development = db.execute("SELECT * FROM customer_developments WHERE id = ?", (development_id,)).fetchone()
+                create_action_record(
+                    db,
+                    title=f"推进客户开发：完成{target['name']}阶段关键动作",
+                    description=f"客户开发已进入{target['name']}，请根据阶段记录持续推进。",
+                    action_type="customer_development_stage",
+                    priority="high",
+                    assignee=development["owner"],
+                    customer_id=development["customer_id"],
+                    customer_organization_id=development["customer_organization_id"],
+                    customer_development_id=development_id,
+                    stage_code=target["code"],
+                    stage_name=target["name"],
+                    source_type="customer_development_stage",
+                    source_id=str(development_id),
+                    created_by=data.get("actor", "李盛云"),
+                    dedupe_key=f"customer-development-stage:{development_id}:{target['code']}",
+                    now=now,
+                )
+                return self.send_json(get_customer_development(db, development_id))
+            if path.startswith("/api/customer-developments/") and path.endswith("/health"):
+                parts = path.strip("/").split("/")
+                try:
+                    development_id = int(parts[2])
+                    score = int(data.get("score"))
+                except (IndexError, TypeError, ValueError):
+                    return self.send_json({"error": "development id and score are required"}, 400)
+                if not 0 <= score <= 100:
+                    return self.send_json({"error": "score must be between 0 and 100"}, 400)
+                if not db.execute("SELECT 1 FROM customer_developments WHERE id = ?", (development_id,)).fetchone():
+                    return self.send_json({"error": "customer development not found"}, 404)
+                db.execute(
+                    """INSERT INTO customer_development_health_scores
+                       (customer_development_id, score, dimensions_json, reason, assessed_by, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        development_id,
+                        score,
+                        json.dumps(data.get("dimensions") or {}, ensure_ascii=False),
+                        str(data.get("reason", "")).strip(),
+                        str(data.get("assessedBy", "manual")).strip() or "manual",
+                        now,
+                    ),
+                )
+                db.execute(
+                    "UPDATE customer_developments SET updated_at = ? WHERE id = ?",
+                    (now, development_id),
+                )
+                return self.send_json(get_customer_development(db, development_id))
+            if path.startswith("/api/customer-developments/") and path.endswith("/strategies"):
+                parts = path.strip("/").split("/")
+                try:
+                    development_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer development id"}, 400)
+                if not db.execute("SELECT 1 FROM customer_developments WHERE id = ?", (development_id,)).fetchone():
+                    return self.send_json({"error": "customer development not found"}, 404)
+                title = str(data.get("title", "")).strip()
+                if not title:
+                    return self.send_json({"error": "title is required"}, 400)
+                db.execute(
+                    """INSERT INTO customer_development_strategies
+                       (customer_development_id, strategy_type, title, content, status,
+                        source_agent_id, source_agent_run_id, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        development_id,
+                        str(data.get("strategyType", "经营策略")).strip(),
+                        title,
+                        str(data.get("content", "")).strip(),
+                        str(data.get("status", "draft")).strip(),
+                        data.get("sourceAgentId"),
+                        data.get("sourceAgentRunId"),
+                        now,
+                        now,
+                    ),
+                )
+                db.execute("UPDATE customer_developments SET updated_at = ? WHERE id = ?", (now, development_id))
+                return self.send_json(get_customer_development(db, development_id), 201)
             if path == "/api/actions":
                 title = str(data.get("title", "")).strip()
                 if not title:
@@ -1647,6 +5646,10 @@ class Handler(BaseHTTPRequestHandler):
                     customer_organization_id = (
                         int(data["customerOrganizationId"])
                         if data.get("customerOrganizationId") else None
+                    )
+                    customer_development_id = (
+                        int(data["customerDevelopmentId"])
+                        if data.get("customerDevelopmentId") else None
                     )
                     person_id = int(data["personId"]) if data.get("personId") else None
                 except (TypeError, ValueError):
@@ -1665,6 +5668,7 @@ class Handler(BaseHTTPRequestHandler):
                         project_id=project_id,
                         customer_id=customer_id,
                         customer_organization_id=customer_organization_id,
+                        customer_development_id=customer_development_id,
                         person_id=person_id,
                         stage_code=data.get("stageCode"),
                         stage_name=data.get("stageName"),
@@ -1675,6 +5679,7 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 except ValueError as error:
                     return self.send_json({"error": str(error)}, 404)
+                record_action_relationship_event(db, action, now)
                 if opportunity_id:
                     db.execute(
                         "INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)",
@@ -1824,8 +5829,10 @@ class Handler(BaseHTTPRequestHandler):
                 project_id = data.get("projectId")
                 if customer_id and not db.execute("SELECT 1 FROM customers WHERE id = ?", (customer_id,)).fetchone():
                     return self.send_json({"error": "customer not found"}, 404)
-                if project_id and not db.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone():
+                project_row = db.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone() if project_id else None
+                if project_id and not project_row:
                     return self.send_json({"error": "project not found"}, 404)
+                resolved_customer_id = customer_id or (project_row["customer_id"] if project_row else None)
                 cur = db.execute(
                     """INSERT INTO persons
                        (name, organization, title, person_type, phone, email, notes, created_at, updated_at)
@@ -1843,12 +5850,12 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                 )
                 person_id = cur.lastrowid
-                if customer_id:
+                if resolved_customer_id:
                     db.execute(
                         """INSERT OR IGNORE INTO customer_persons
                            (customer_id, person_id, role, is_primary, created_at)
                            VALUES (?, ?, ?, ?, ?)""",
-                        (customer_id, person_id, data.get("customerRole", "联系人"), int(bool(data.get("isPrimary"))), now),
+                        (resolved_customer_id, person_id, data.get("customerRole", "联系人"), int(bool(data.get("isPrimary"))), now),
                     )
                 if project_id:
                     db.execute(
@@ -1857,6 +5864,17 @@ class Handler(BaseHTTPRequestHandler):
                            VALUES (?, ?, ?, ?, ?)""",
                         (project_id, person_id, data.get("projectRole", "项目联系人"), int(bool(data.get("isPrimary"))), now),
                     )
+                if resolved_customer_id:
+                    emit_customer_profile_event(
+                        db,
+                        "person_changed",
+                        resolved_customer_id,
+                        "person",
+                        person_id,
+                        {"change": "created", "role": data.get("customerRole", "联系人"), "projectId": project_id},
+                        now=now,
+                        dedupe_key=f"person_changed:person:{person_id}:created",
+                    )
                 return self.send_json(dict(db.execute("SELECT * FROM persons WHERE id = ?", (person_id,)).fetchone()), 201)
             if path.startswith("/api/opportunities/") and path.endswith("/people"):
                 parts = path.strip("/").split("/")
@@ -1864,7 +5882,8 @@ class Handler(BaseHTTPRequestHandler):
                     opportunity_id = int(parts[2])
                 except (IndexError, ValueError):
                     return self.send_json({"error": "invalid opportunity id"}, 400)
-                if not db.execute("SELECT 1 FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone():
+                opportunity_row = db.execute("SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+                if not opportunity_row:
                     return self.send_json({"error": "opportunity not found"}, 404)
                 person_id = data.get("personId")
                 if not person_id:
@@ -1914,7 +5933,54 @@ class Handler(BaseHTTPRequestHandler):
                         now,
                     ),
                 )
+                opportunity_role_types = {
+                    "业务发起人": "person_opportunity_sponsor",
+                    "决策人": "person_opportunity_decision_maker",
+                    "采购把关人": "person_opportunity_decision_maker",
+                    "技术推动者": "person_opportunity_influencer",
+                }
+                relationship_type = relationship_type_row(
+                    db,
+                    code=opportunity_role_types.get(role, "person_opportunity_influencer"),
+                )
+                source_entity = ensure_relationship_entity(db, "Person", person_id, now=now)
+                target_entity = ensure_relationship_entity(db, "Opportunity", opportunity_id, now=now)
+                if source_entity and target_entity and relationship_type:
+                    influence_score = {"高": 85, "中": 60, "低": 30}.get(
+                        str(data.get("influenceLevel", "未知")).strip(), 0
+                    )
+                    relationship_status = str(data.get("relationshipStatus", "待建立")).strip() or "待建立"
+                    upsert_relationship(
+                        db,
+                        source_entity["id"],
+                        target_entity["id"],
+                        relationship_type["id"],
+                        {
+                            "strengthScore": influence_score,
+                            "status": "inactive" if relationship_status == "已失联" else "active",
+                            "confidence": 80,
+                            "notes": str(data.get("relationshipNotes", data.get("notes", ""))).strip(),
+                        },
+                        now,
+                    )
                 db.execute("UPDATE persons SET updated_at = ? WHERE id = ?", (now, person_id))
+                if opportunity_row["customer_id"]:
+                    db.execute(
+                        """INSERT OR IGNORE INTO customer_persons
+                           (customer_id, person_id, role, is_primary, created_at)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (opportunity_row["customer_id"], person_id, role, int(bool(data.get("isPrimary"))), now),
+                    )
+                    emit_customer_profile_event(
+                        db,
+                        "person_changed",
+                        opportunity_row["customer_id"],
+                        "opportunity_person",
+                        f"{opportunity_id}:{person_id}:{role}",
+                        {"change": "linked", "opportunityId": opportunity_id, "personId": person_id, "role": role},
+                        now=now,
+                        dedupe_key=f"person_changed:opportunity_person:{opportunity_id}:{person_id}:{role}:{now}",
+                    )
                 return self.send_json({"status": "linked", "opportunityId": opportunity_id, "personId": person_id}, 201)
             if path == "/api/discovery/drafts":
                 content = str(data.get("contentBase64", ""))
@@ -2040,6 +6106,26 @@ class Handler(BaseHTTPRequestHandler):
                 current_stage = stage_definition(db, created_opportunity["stage"])
                 if current_stage:
                     create_stage_actions(db, created_opportunity, current_stage, "stage_plan", "discovery_confirmed", now)
+                emit_customer_profile_event(
+                    db,
+                    "project_created",
+                    customer_id,
+                    "project",
+                    project_id,
+                    {"projectId": project_id, "opportunityId": opportunity_id, "source": "discovery_confirm"},
+                    now=now,
+                    dedupe_key=f"project_created:project:{project_id}",
+                )
+                emit_customer_profile_event(
+                    db,
+                    "opportunity_created",
+                    customer_id,
+                    "opportunity",
+                    opportunity_id,
+                    {"projectId": project_id, "sectionId": section_id, "source": "discovery_confirm"},
+                    now=now,
+                    dedupe_key=f"opportunity_created:opportunity:{opportunity_id}",
+                )
                 return self.send_json({"status": "confirmed", "opportunityId": opportunity_id, "customerId": customer_id, "projectId": project_id, "sectionId": section_id}, 201)
             if path == "/api/opportunities":
                 required = ["name", "customer", "stage"]
@@ -2055,11 +6141,25 @@ class Handler(BaseHTTPRequestHandler):
                 for tag in tags:
                     db.execute("INSERT INTO semantic_fields (opportunity_id, field_name, field_type, field_value) VALUES (?, ?, ?, ?)", (oid, "业务标签", "semantic_tag", tag))
                 db.execute("INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)", (oid, "created", "商机对象已创建，已生成语义字段", now))
+                customer_row = db.execute("SELECT id FROM customers WHERE name = ?", (data["customer"],)).fetchone()
+                if customer_row:
+                    db.execute("UPDATE opportunities SET customer_id = ? WHERE id = ?", (customer_row["id"], oid))
                 backfill_opportunity_relations(db, now)
                 created_opportunity = db.execute("SELECT * FROM opportunities WHERE id = ?", (oid,)).fetchone()
                 current_stage = stage_definition(db, created_opportunity["stage"])
                 if current_stage:
                     create_stage_actions(db, created_opportunity, current_stage, "stage_plan", "opportunity_created", now)
+                if customer_row:
+                    emit_customer_profile_event(
+                        db,
+                        "opportunity_created",
+                        customer_row["id"],
+                        "opportunity",
+                        oid,
+                        {"stage": created_opportunity["stage"], "amount": created_opportunity["amount"]},
+                        now=now,
+                        dedupe_key=f"opportunity_created:opportunity:{oid}",
+                    )
                 return self.send_json(get_opportunity(db, oid), 201)
             if path.startswith("/api/opportunities/") and path.endswith("/events"):
                 try:
@@ -2081,6 +6181,51 @@ class Handler(BaseHTTPRequestHandler):
                         data["category"], data.get("assetType", data["category"]), data["name"], data["description"],
                         json.dumps(data.get("badges", ["新增资产"]), ensure_ascii=False), json.dumps(data.get("fields", []), ensure_ascii=False), now, now))
                 return self.send_json({"id": cur.lastrowid, **data, "badges": data.get("badges", ["新增资产"]), "fields": data.get("fields", [])}, 201)
+            if path.startswith("/api/semantic-assets/"):
+                try:
+                    asset_id = int(path.strip("/").split("/")[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid semantic asset id"}, 400)
+                row = db.execute("SELECT * FROM semantic_assets WHERE id = ?", (asset_id,)).fetchone()
+                if not row:
+                    return self.send_json({"error": "semantic asset not found"}, 404)
+                category = str(data.get("category", row["category"])).strip()
+                asset_type = str(data.get("assetType", row["asset_type"])).strip() or category
+                name = str(data.get("name", row["name"])).strip()
+                description = str(data.get("description", row["description"])).strip()
+                if not category or not name or not description:
+                    return self.send_json({"error": "category, name and description are required"}, 400)
+                badges = data.get("badges", json.loads(row["badges"] or "[]"))
+                fields = data.get("fields", json.loads(row["fields_json"] or "[]"))
+                if not isinstance(fields, list):
+                    return self.send_json({"error": "fields must be an array"}, 400)
+                db.execute(
+                    """UPDATE semantic_assets
+                       SET category = ?, asset_type = ?, name = ?, description = ?,
+                           badges = ?, fields_json = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (
+                        category,
+                        asset_type,
+                        name,
+                        description,
+                        json.dumps(badges, ensure_ascii=False),
+                        json.dumps(fields, ensure_ascii=False),
+                        now,
+                        asset_id,
+                    ),
+                )
+                return self.send_json({
+                    "id": asset_id,
+                    "category": category,
+                    "assetType": asset_type,
+                    "type": asset_type,
+                    "name": name,
+                    "description": description,
+                    "badges": badges,
+                    "fields": fields,
+                    "updated_at": now,
+                })
             if path.startswith("/api/opportunities/") and path.endswith("/stage"):
                 try:
                     oid = int(path.strip("/").split("/")[2])
@@ -2130,6 +6275,17 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 db.execute("INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)",
                            (oid, "stage_changed", f"商机阶段由 {old_name} 转换为 {new_stage}，阶段字段已校验", now))
+                if row["customer_id"]:
+                    emit_customer_profile_event(
+                        db,
+                        "opportunity_stage_changed",
+                        row["customer_id"],
+                        "opportunity_stage_transition",
+                        transition_cur.lastrowid,
+                        {"opportunityId": oid, "fromStage": old_name, "toStage": new_stage, "required": required},
+                        now=now,
+                        dedupe_key=f"opportunity_stage_changed:transition:{transition_cur.lastrowid}",
+                    )
                 return self.send_json({
                     "status": "converted",
                     "stage": new_stage,
@@ -2153,6 +6309,18 @@ class Handler(BaseHTTPRequestHandler):
                 ).fetchone():
                     return self.send_json({"error": "opportunity not found"}, 404)
                 result = data.get("result") or "已完成语义分析，生成待确认的客户开发建议。"
+                relationship_context = ""
+                if opportunity_id:
+                    relationship_analysis = RelationshipService(db).find_decision_makers(opportunity_id)
+                    recommended = (relationship_analysis.get("recommended") or [None])[0]
+                    if recommended:
+                        relationship_context = (
+                            f"关系分析：建议优先联系{recommended['sourceEntity']['name']}，"
+                            f"当前关系强度{recommended.get('strength_score', 0)}分。"
+                        )
+                    else:
+                        relationship_context = "关系分析：当前商机暂无直接决策人关系，建议先补齐关键人并建立联系。"
+                    result = f"{result} {relationship_context}"
                 cur = db.execute("INSERT INTO agent_runs (agent_id, opportunity_id, input_json, result, created_at) VALUES (?, ?, ?, ?, ?)", (agent_id, opportunity_id, json.dumps(data, ensure_ascii=False), result, now))
                 action = None
                 if opportunity_id:
