@@ -1079,7 +1079,7 @@ def init_db():
         db.execute("CREATE INDEX IF NOT EXISTS idx_relationships_target_entity_id ON relationships(target_entity_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_relationships_type_id ON relationships(relationship_type_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_scores_relationship_id ON relationship_scores(relationship_id)")
-         db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_score_configs_status ON relationship_score_configs(status, is_default)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_score_configs_status ON relationship_score_configs(status, is_default)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_events_relationship_id ON relationship_events(relationship_id)")
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_opportunities_project_section_id ON opportunities(project_section_id) WHERE project_section_id IS NOT NULL")
         agent_count = db.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
@@ -1094,8 +1094,8 @@ def init_db():
         seed_customer_profiles(db, now)
         seed_customer_profile_scoring_models(db, now)
         seed_relationship_ontology(db, now)
-         seed_relationship_score_config(db, now)
-         backfill_relationship_scores(db, now)
+        seed_relationship_score_config(db, now)
+        backfill_relationship_scores(db, now)
 
 def seed_organization_ontology(db, now):
     """初始化我方销售组织，并为现有客户建立集团根节点。"""
