@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#14283d" flood-opacity=".14"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#657b8c"/>
+    </marker>
+    <style>
+      .title{font-family:Arial,'Microsoft YaHei',sans-serif;font-weight:700;fill:#153b5c}
+      .body{font-family:Arial,'Microsoft YaHei',sans-serif;fill:#29465d}
+      .muted{font-family:Arial,'Microsoft YaHei',sans-serif;fill:#718494}
+      .white{font-family:Arial,'Microsoft YaHei',sans-serif;fill:#fff}
+      .small{font-size:14px}.mid{font-size:16px}.label{font-size:18px;font-weight:700}
+      .box{fill:#fff;stroke:#c8d6df;stroke-width:1.5}
+    </style>
+  </defs>
+
+  <rect width="1600" height="900" fill="#f5f8fb"/>
+  <text x="50" y="52" class="title" font-size="30">CRM-DEMO｜销售语音录入 CRM 能力</text>
+  <text x="50" y="82" class="body" font-size="16">把拜访录音转成可解释、可审核、可回写的客户 / 项目 / 关键人 / 需求 / 竞争 / 下一步行动事实</text>
+
+  <rect x="50" y="108" width="1500" height="52" rx="6" fill="#fff8e9" stroke="#ddb36d"/>
+  <text x="75" y="140" class="body mid" font-weight="700">设计主线：录音是证据 → FactCandidate 是候选 → 治理后才成为 CRM 正式字段或行动</text>
+
+  <!-- Main flow -->
+  <rect x="50" y="195" width="1500" height="254" rx="9" fill="#fff" stroke="#d4e0e8" filter="url(#shadow)"/>
+  <text x="76" y="226" class="title label">一、从拜访录音到候选事实</text>
+
+  <g class="body">
+    <rect x="78" y="256" width="190" height="150" rx="7" fill="#e8f2f8" stroke="#8fb4c9"/>
+    <text x="173" y="287" text-anchor="middle" class="label" fill="#195b7d">销售拜访录音</text>
+    <text x="98" y="321" class="small">客户 / 项目上下文</text>
+    <text x="98" y="346" class="small">销售、时间、地点</text>
+    <text x="98" y="371" class="small">原始音频引用</text>
+    <text x="98" y="392" class="muted small">recordingId + 权限</text>
+
+    <rect x="311" y="256" width="190" height="150" rx="7" fill="#eaf6f4" stroke="#90c6ba"/>
+    <text x="406" y="287" text-anchor="middle" class="label" fill="#1a6b5e">语音识别</text>
+    <text x="331" y="321" class="small">转写文本</text>
+    <text x="331" y="346" class="small">说话人分离</text>
+    <text x="331" y="371" class="small">时间戳与语言</text>
+    <text x="331" y="392" class="muted small">可回听的证据片段</text>
+
+    <rect x="544" y="256" width="250" height="150" rx="7" fill="#f0ecfa" stroke="#b8a9d9"/>
+    <text x="669" y="287" text-anchor="middle" class="label" fill="#5a4a89">AI 抽取业务事实</text>
+    <text x="564" y="319" class="small">客户 · 项目 · 关键人</text>
+    <text x="564" y="344" class="small">需求 · 竞争 · 下一步行动</text>
+    <text x="564" y="369" class="small">值、类型、置信度</text>
+    <text x="564" y="392" class="muted small">不确定时输出 unknown</text>
+
+    <rect x="837" y="256" width="250" height="150" rx="7" fill="#fff4e6" stroke="#e0b36e"/>
+    <text x="962" y="287" text-anchor="middle" class="label" fill="#9a6219">实体与字段治理</text>
+    <text x="857" y="319" class="small">实体解析与上下文绑定</text>
+    <text x="857" y="344" class="small">语义层字段 / 枚举校验</text>
+    <text x="857" y="369" class="small">置信度、质量、冲突检测</text>
+    <text x="857" y="392" class="muted small">禁止字符串直写 CRM</text>
+
+    <rect x="1130" y="256" width="375" height="150" rx="7" fill="#173f68" stroke="#173f68"/>
+    <text x="1317" y="287" text-anchor="middle" class="white label">FactCandidate 候选事实</text>
+    <text x="1154" y="319" class="white small">事实类型 · 主体 · 谓词 · 候选值</text>
+    <text x="1154" y="344" class="white small">录音来源 · 时间戳 · 原文证据</text>
+    <text x="1154" y="369" class="white small">PENDING · confidence · conflict</text>
+    <text x="1154" y="392" class="white small">等待自动规则或人工确认</text>
+  </g>
+
+  <g stroke="#657b8c" stroke-width="2" fill="none" marker-end="url(#arrow)">
+    <path d="M268 331 H311"/><path d="M501 331 H544"/><path d="M794 331 H837"/><path d="M1087 331 H1130"/>
+  </g>
+
+  <!-- Governance split -->
+  <rect x="50" y="482" width="1500" height="190" rx="9" fill="#fff" stroke="#d4e0e8" filter="url(#shadow)"/>
+  <text x="76" y="513" class="title label">二、根据风险决定是否自动写入</text>
+
+  <rect x="78" y="540" width="420" height="102" rx="7" fill="#e8f6ee" stroke="#8fc6a5"/>
+  <text x="99" y="570" class="body label" fill="#216b42">低风险：自动写入</text>
+  <text x="99" y="596" class="body small">高置信度、无冲突、字段可回滚</text>
+  <text x="99" y="620" class="body small">摘要草稿、内部事实、行动草稿</text>
+
+  <rect x="546" y="540" width="420" height="102" rx="7" fill="#fff6df" stroke="#dfb96a"/>
+  <text x="567" y="570" class="body label" fill="#8a5b16">中风险：销售确认</text>
+  <text x="567" y="596" class="body small">关键人、项目阶段、需求优先级</text>
+  <text x="567" y="620" class="body small">确认 / 修改 / 驳回，保留证据</text>
+
+  <rect x="1014" y="540" width="491" height="102" rx="7" fill="#fbe9e9" stroke="#d79a9a"/>
+  <text x="1035" y="570" class="body label" fill="#9a3e3e">高风险：审批或人工复核</text>
+  <text x="1035" y="596" class="body small">价格、折扣、合同承诺、竞争结论</text>
+  <text x="1035" y="620" class="body small">敏感数据、批量更新、对外动作</text>
+
+  <path d="M1317 406 V515" stroke="#657b8c" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Outputs -->
+  <rect x="50" y="705" width="1500" height="126" rx="9" fill="#fff" stroke="#d4e0e8" filter="url(#shadow)"/>
+  <text x="76" y="736" class="title label">三、治理后的 CRM 结果与反馈闭环</text>
+  <g class="body">
+    <rect x="78" y="756" width="260" height="50" rx="6" fill="#eef4f8" stroke="#a9bfd0"/>
+    <text x="208" y="787" text-anchor="middle" class="small">客户 / 项目 / 关键人字段</text>
+    <rect x="364" y="756" width="260" height="50" rx="6" fill="#eef4f8" stroke="#a9bfd0"/>
+    <text x="494" y="787" text-anchor="middle" class="small">需求与竞争事实</text>
+    <rect x="650" y="756" width="260" height="50" rx="6" fill="#eef4f8" stroke="#a9bfd0"/>
+    <text x="780" y="787" text-anchor="middle" class="small">下一步行动 / 任务</text>
+    <rect x="936" y="756" width="260" height="50" rx="6" fill="#eef4f8" stroke="#a9bfd0"/>
+    <text x="1066" y="787" text-anchor="middle" class="small">事件、审计与同步日志</text>
+    <rect x="1222" y="756" width="283" height="50" rx="6" fill="#eaf6f4" stroke="#90c6ba"/>
+    <text x="1364" y="787" text-anchor="middle" class="small">销售修正 → 规则优化</text>
+  </g>
+
+  <path d="M78 856 H1505" stroke="#b7c8d5" stroke-width="1.5"/>
+  <text x="800" y="881" class="muted" text-anchor="middle" font-size="12">复用现有 FactCandidate、质量评分、冲突检测、审核服务与本体同步能力｜2026-10-14</text>
+</svg>

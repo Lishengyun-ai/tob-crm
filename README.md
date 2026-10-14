@@ -15,7 +15,11 @@ python server.py
 - `outputs/index.html`：CRM 原型界面
 - `server.py`：Python 标准库后台和 SQLite 接口
 - `ai-native-crm-architecture.svg`：AI 原生 CRM 架构图
+- `crm-voice-entry-flow.svg`：销售语音录入 CRM 端到端流程图
 - `ai-native-crm-design-notes.md`：架构设计说明
+- `crm-voice-entry-design.md`：销售语音录入 CRM 能力设计
+- `crm-image-opportunity-flow.svg`：图片识别商机报备端到端流程图
+- `crm-image-opportunity-design.md`：图片识别商机报备设计
 
 ## 部署说明
 

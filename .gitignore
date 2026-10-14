@@ -8,3 +8,8 @@ data/*.db
 codex-clipboard-*
 work/
 .DS_Store
+node_modules/
+tmp_v23_er_render/
+outputs/alignment_preview/
+*.inspect.ndjson
+doc_analysis_extract.txt

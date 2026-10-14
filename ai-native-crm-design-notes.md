@@ -146,3 +146,89 @@ AI 原生 CRM 的核心不是“在 CRM 上增加一个聊天框”，而是把 
 
 - `ai-native-crm-architecture.svg`：1600×900 的专业 16:9 架构图，可直接放入演示文稿或浏览器打开。
 - 本文档：架构分层、Agent 职责、治理边界、数据闭环和实施路径。
+
+## 9. Relationship Score Engine V1
+
+### 9.1 目标与边界
+
+Relationship Score Engine V1 用于把关系强度从人工加减分升级为可解释的自动评分。它只扩展评分配置、评分结果和关系事件联动，不修改已有 Relationship 本体结构。
+
+当前版本不做机器学习训练、自动学习权重、外部社交数据接入或复杂图算法。这样可以先保证评分口径统一、结果可回放，再根据真实业务反馈迭代模型。
+
+### 9.2 评分因素
+
+最终分数为五项因素的加权平均，结果限制在 `0-100`：
+
+| 因素 | V1 输入 | 评分口径 |
+| --- | --- | --- |
+| 互动频率 | 最近 90 天关系事件、历史 `interaction_count` | 最近 90 天事件每增加 1 次增加 20 分，最高 100 分 |
+| 最近联系 | 最近关系事件、`last_contact_at` | 7/14/30/60/90 天分段衰减，超过 90 天保留 10 分 |
+| 职位影响力 | `influence_level`、关系类型 | 高/中/低/未知分别映射为 100/70/40/25 |
+| 历史合作 | 关系事件数量、`impact_score` | 事件数量和正向影响共同计算，最高 100 分 |
+| 关系持续时间 | `first_established_at` | 30/90/180/365/730 天分段增加，最高 100 分 |
+
+关系类型的 `default_weight` 作为缺少职位影响力数据时的回退值；决策人关系在没有明确职位等级时至少保留 90 分的影响力分。
+
+### 9.3 数据模型
+
+评分能力使用两个新增表：
+
+- `relationship_score_configs`：保存 V1 权重和配置状态。
+- `relationship_scores`：保存每次评分的总分、五项子分、实际权重、加权明细、评分原因、来源和时间。
+
+`relationships.strength_score` 和 `relationships.strength_level` 只保存当前快照，完整评分历史以 `relationship_scores` 为准。因此人工评分不会删除自动评分历史，自动重算也不会覆盖历史记录。
+
+### 9.4 自动与人工评分
+
+评分来源通过 `calculated_by` 区分：
+
+- 自动评分：`relationship_score_engine_v1`
+- 人工评分：`manual`
+
+人工评分可以暂时更新 Relationship 当前快照，但必须使用 `manual` 来源。下一次自动评分会追加新的自动评分记录并恢复自动引擎结果；客户端不能通过人工接口伪造自动评分来源。
+
+### 9.5 触发与回填
+
+以下场景会触发单条自动评分：
+
+1. 创建或更新 Relationship；
+2. 新增关系事件；
+3. Action 完成并沉淀关系事件；
+4. 显式调用单条评分 API。
+
+系统启动时执行幂等回填，只为没有 V1 自动评分历史的旧关系补算一次。配置权重更新后，系统会强制批量重算全部关系，生成新的评分历史。
+
+批量重算接口：
+
+```http
+POST /api/relationship-score/recalculate
+```
+
+支持 `relationshipIds`、`relationshipTypeCode`、`updatedSince` 和 `force` 参数。返回 `requested`、`calculated`、`skipped`、`failed` 以及逐条执行结果，便于任务重试和审计。
+
+### 9.6 API 约定
+
+```text
+GET  /api/relationship-score/config
+PUT  /api/relationship-score/config
+POST /api/relationships/{id}/scores          # mode=auto 或人工评分
+POST /api/relationships/{id}/events          # 写入事件并自动重算
+POST /api/relationship-score/recalculate     # 批量重算
+GET  /api/relationships/{id}                 # 当前评分、历史评分和事件
+```
+
+评分服务对非法权重、越界分数、非法关系 ID 和非法时间返回明确错误。所有自动评分结果都保留评分明细，保证用户能够理解分数来源。
+
+### 9.7 测试范围
+
+V1 回归测试覆盖：
+
+- 五个评分因子的边界和缺失数据；
+- 默认权重、自定义权重和权重校验；
+- 总分及子分数的 `0-100` 范围；
+- 评分表和配置表关键字段；
+- 事件触发自动重算；
+- 启动回填幂等；
+- 批量重算筛选和强制模式；
+- 人工评分历史保留；
+- 自动评分来源不可被人工接口伪造。

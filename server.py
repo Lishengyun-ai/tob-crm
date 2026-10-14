@@ -5,10 +5,51 @@ import base64
 import hashlib
 import mimetypes
 import re
+import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
+
+from customer_fact import CustomerFactRepository
+from insight_controller import InsightController
+from insight_repository import InsightRepository
+from insight_service import InsightService
+from opportunity_insight_controller import OpportunityInsightController
+from opportunity_insight_repository import OpportunityInsightRepository
+from opportunity_insight_service import OpportunityInsightService
+from insight_action_controller import InsightActionController
+from insight_action_repository import InsightActionRepository
+from insight_action_service import InsightActionService
+from customer_insight_agent import CustomerInsightAgent
+from insight_score_controller import InsightScoreController
+from insight_score_repository import InsightScoreRepository
+from insight_score_service import InsightScoreService
+from customer_potential_prediction import (
+    get_latest_customer_potential_prediction,
+    get_prediction_by_id,
+    predict_customer_potential,
+)
+from customer_conversion_prediction import (
+    get_customer_conversion_prediction,
+    get_latest_customer_conversion_prediction,
+    predict_customer_conversion,
+)
+from customer_value_prediction import (
+    get_customer_value_prediction,
+    get_latest_customer_value_prediction,
+    predict_customer_value,
+)
+from customer_growth_prediction import (
+    get_customer_growth_prediction,
+    get_latest_customer_growth_prediction,
+    predict_customer_growth,
+)
+from customer_growth_intelligence_agent import (
+    get_customer_growth_intelligence_report,
+    get_latest_customer_growth_intelligence_report,
+    run_customer_growth_intelligence_agent,
+)
 
 ROOT = Path(__file__).parent
 DB_DIR = ROOT / "data"
@@ -23,6 +64,14 @@ SEED_OPPORTUNITIES = [
     ("海岳地产客户经营平台", "海岳地产", "赢单", "1050000", "地产行业", "李盛云", "合同已签署，进入首期交付准备阶段。", "", "创建项目与交付计划", "赢单,交付准备"),
 ]
 
+SEED_INSIGHTS = [
+    ("客户预算窗口", "Opportunity", "客户已确认营销自动化与渠道协同需求，存在扩大合作范围的机会。", "Customer Insight Agent"),
+    ("决策链尚未闭合", "Risk", "当前商机尚未确认最终预算审批人，可能影响方案评审节奏。", "Opportunity Analysis Agent"),
+    ("从渠道协同切入", "Breakthrough", "建议以渠道协同价值测算作为下一次客户沟通的切入点。", "拜访策略 Agent"),
+    ("竞品在价格侧占优", "Competition", "已知竞品在报价阶段具备价格优势，需要强化交付与业务价值证明。", "Competition Agent"),
+    ("安排方案评审会议", "Recommendation", "在本周内邀请客户业务与采购负责人参加方案评审，确认预算与决策节点。", "Sales Copilot"),
+]
+
 SEED_AGENTS = [
     ("customer-insight", "客户洞察 Agent", "客户开发", "从客户、商机、关系和经营指标生成画像、评分、机会与风险洞察。", "客户画像生成,客户评分计算,机会识别,风险扫描", "客户画像,涂料客户增长潜力模型,采购金额增长归因"),
     ("development-strategy", "客户开发策略 Agent", "客户开发", "结合客户 AT 阶段和涂料行业策略，生成突破路径、关键人策略与 30/60/90 天计划。", "开发目标拆解,工程入口识别,设计突破,方案植入,样板验证,关键人地图,30/60/90行动计划", "客户出货目标达成阈值,高潜工程客户增购策略,工程涂料项目推进 SOP"),
@@ -31,6 +80,7 @@ SEED_AGENTS = [
     ("presentation", "PPT Agent", "销售执行", "将客户画像、方案、价值测算和竞争信息组织成客户交流材料与汇报大纲。", "客户交流材料,汇报方案,价值测算,一页纸摘要", "客户画像,采购金额,高潜工程客户增购策略"),
     ("competition", "竞争策略 Agent", "销售执行", "识别竞品、价格、关系和供应商准入风险，给出涂料商机突破打法。", "竞品分析,竞争位势,价格策略,突破打法", "商机关系图谱,涂料报价审批规则,采购金额增长归因"),
     ("opportunity-progress", "商机推进 Agent", "商机诊断", "识别商机所处 AT 阶段、缺失条件和下一步动作，推动商机形成可验证的业务事件。", "AT阶段判断,阶段准入校验,下一步动作,风险提示,业务事件记录", "推进涂料商机,样板验证完成,工程涂料项目推进 SOP"),
+    ("opportunity-analysis", "商机分析 Agent", "商机诊断", "查询商机相关的已确认事实，并将未确认事实作为待核对提示。", "商机事实查询,事实一致性分析,风险提示", "商机关系图谱,事实审核规则"),
     ("win-loss-review", "赢单/输单复盘 Agent", "商机诊断", "复盘赢单、输单和样板验证结果，将经验沉淀为可复用的策略与知识。", "赢单复盘,输单归因,最佳实践提炼,知识库沉淀", "采购金额增长归因,商机关系图谱,高潜工程客户增购策略"),
 ]
 
@@ -143,6 +193,34 @@ DEFAULT_RELATIONSHIP_SCORE_WEIGHTS = {
     "duration": 0.15,
 }
 
+RELATIONSHIP_SCORE_MODEL_STATUSES = {
+    "DRAFT",
+    "TESTING",
+    "PUBLISHED",
+    "DISABLED",
+}
+
+RELATIONSHIP_SCORE_MODEL_VERSION_STATUSES = {
+    "DRAFT",
+    "TESTING",
+    "PUBLISHED",
+    "DISABLED",
+}
+
+DEFAULT_RELATIONSHIP_SCORE_DIMENSIONS = (
+    ("interaction_frequency", "互动频率", 0.25, "根据关系事件和互动次数评估互动频率。"),
+    ("recency", "最近联系时间", 0.25, "根据最近一次联系或关系事件评估联系新鲜度。"),
+    ("influence", "职位影响力", 0.20, "根据关系角色和职位影响力评估关系价值。"),
+    ("history", "历史合作", 0.15, "根据历史关系事件和合作影响评估历史合作程度。"),
+    ("duration", "关系持续时间", 0.15, "根据关系建立时间评估关系持续时长。"),
+)
+
+RELATIONSHIP_SCORE_RULE_TYPES = {
+    "RANGE",
+    "TIME",
+    "ENUM",
+}
+
 LEGACY_STAGE_MAP = {
     "初步接触": "商机报备",
     "需求确认": "商机确认",
@@ -243,6 +321,144 @@ def init_db():
           status TEXT NOT NULL DEFAULT 'active',
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS insights (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          type TEXT NOT NULL CHECK (type IN (
+            'Opportunity', 'Risk', 'Breakthrough', 'Competition', 'Recommendation'
+          )),
+          description TEXT NOT NULL,
+          source TEXT NOT NULL,
+          created_time TEXT NOT NULL,
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS insight_scores (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          insight_id INTEGER NOT NULL UNIQUE,
+          confidence INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
+          business_value INTEGER NOT NULL CHECK (business_value BETWEEN 0 AND 100),
+          urgency INTEGER NOT NULL CHECK (urgency BETWEEN 0 AND 100),
+          actionability INTEGER NOT NULL CHECK (actionability BETWEEN 0 AND 100),
+          score INTEGER NOT NULL CHECK (score BETWEEN 0 AND 100),
+          created_time TEXT NOT NULL,
+          FOREIGN KEY(insight_id) REFERENCES insights(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS opportunity_insights (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          opportunity_id INTEGER NOT NULL,
+          insight_id INTEGER NOT NULL,
+          created_time TEXT NOT NULL,
+          UNIQUE(opportunity_id, insight_id),
+          FOREIGN KEY(opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE,
+          FOREIGN KEY(insight_id) REFERENCES insights(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS customer_facts (
+          fact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_id INTEGER NOT NULL,
+          fact_type TEXT NOT NULL CHECK (fact_type IN (
+            'CUSTOMER_BASIC', 'ORGANIZATION', 'PURCHASE', 'PROJECT',
+            'RELATIONSHIP', 'BEHAVIOR', 'COMPETITOR', 'STRATEGY'
+          )),
+          fact_name TEXT NOT NULL,
+          fact_content TEXT NOT NULL DEFAULT '',
+          fact_value TEXT NOT NULL DEFAULT '',
+          unit TEXT NOT NULL DEFAULT '',
+          source_type TEXT NOT NULL DEFAULT 'manual',
+          source_id TEXT NOT NULL DEFAULT '',
+          confidence_score INTEGER CHECK (confidence_score BETWEEN 0 AND 100),
+          verification_status TEXT NOT NULL DEFAULT 'PENDING' CHECK (verification_status IN ('PENDING', 'VERIFIED', 'REJECTED')),
+          valid_from TEXT,
+          valid_to TEXT,
+          status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'INACTIVE', 'ARCHIVED')),
+          created_by TEXT NOT NULL DEFAULT 'system',
+          created_time TEXT NOT NULL,
+          updated_time TEXT NOT NULL,
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS fact_candidates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          fact_type TEXT NOT NULL,
+          subject_type TEXT NOT NULL CHECK (subject_type IN ('Customer', 'Person', 'Opportunity', 'Project')),
+          subject_id INTEGER NOT NULL,
+          predicate TEXT NOT NULL,
+          object_value TEXT NOT NULL,
+          object_type TEXT NOT NULL,
+          source_type TEXT NOT NULL CHECK (source_type IN ('recording', 'chat', 'document')),
+          source_id TEXT NOT NULL,
+          confidence INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
+          fact_quality_score INTEGER CHECK (fact_quality_score BETWEEN 0 AND 100),
+          fact_quality_level TEXT CHECK (fact_quality_level IN ('A', 'B', 'C')),
+          status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'MODIFIED')),
+          created_by TEXT NOT NULL DEFAULT 'system',
+          created_time TEXT NOT NULL,
+          review_user TEXT,
+          review_time TEXT
+        );
+        CREATE TABLE IF NOT EXISTS ontology_fact_values (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          subject_type TEXT NOT NULL CHECK (subject_type IN ('Customer', 'Person', 'Opportunity', 'Project')),
+          subject_id INTEGER NOT NULL,
+          predicate TEXT NOT NULL,
+          object_value TEXT NOT NULL,
+          object_type TEXT NOT NULL,
+          fact_candidate_id INTEGER NOT NULL,
+          created_time TEXT NOT NULL,
+          updated_time TEXT NOT NULL,
+          UNIQUE(subject_type, subject_id, predicate),
+          FOREIGN KEY(fact_candidate_id) REFERENCES fact_candidates(id)
+        );
+        CREATE TABLE IF NOT EXISTS fact_candidate_review_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          fact_candidate_id INTEGER NOT NULL,
+          action TEXT NOT NULL CHECK (action IN ('APPROVE', 'REJECT', 'MODIFY')),
+          before_json TEXT NOT NULL DEFAULT '{}',
+          after_json TEXT NOT NULL DEFAULT '{}',
+          review_user TEXT NOT NULL,
+          review_time TEXT NOT NULL,
+          ontology_result_json TEXT NOT NULL DEFAULT '{}',
+          FOREIGN KEY(fact_candidate_id) REFERENCES fact_candidates(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS fact_conflicts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          fact_id_1 INTEGER NOT NULL,
+          fact_id_2 INTEGER NOT NULL,
+          conflict_type TEXT NOT NULL,
+          resolution_status TEXT NOT NULL DEFAULT 'OPEN'
+            CHECK (resolution_status IN ('OPEN', 'RESOLVED', 'IGNORED')),
+          UNIQUE(fact_id_1, fact_id_2, conflict_type),
+          CHECK (fact_id_1 < fact_id_2),
+          FOREIGN KEY(fact_id_1) REFERENCES fact_candidates(id) ON DELETE CASCADE,
+          FOREIGN KEY(fact_id_2) REFERENCES fact_candidates(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS fact_ontology_sync_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          fact_candidate_id INTEGER NOT NULL,
+          attempt_no INTEGER NOT NULL,
+          action TEXT NOT NULL DEFAULT 'SYNC',
+          status TEXT NOT NULL CHECK (status IN ('STARTED', 'SUCCESS', 'FAILED')),
+          subject_type TEXT NOT NULL,
+          subject_id INTEGER NOT NULL,
+          target_field TEXT,
+          previous_value TEXT,
+          new_value TEXT,
+          error_message TEXT NOT NULL DEFAULT '',
+          created_time TEXT NOT NULL,
+          completed_time TEXT,
+          UNIQUE(fact_candidate_id, attempt_no),
+          FOREIGN KEY(fact_candidate_id) REFERENCES fact_candidates(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS fact_source (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_type TEXT NOT NULL CHECK (source_type IN (
+            'CRM', 'ERP', '云筑', '人工录入', 'AI抽取', '会议记录'
+          )),
+          source_name TEXT NOT NULL,
+          source_system TEXT NOT NULL,
+          source_record_id TEXT NOT NULL DEFAULT '',
+          extract_method TEXT NOT NULL DEFAULT '',
+          created_time TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS sales_organizations (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -537,6 +753,17 @@ def init_db():
           FOREIGN KEY(source_agent_id) REFERENCES agents(id) ON DELETE SET NULL,
           FOREIGN KEY(source_agent_run_id) REFERENCES agent_runs(id) ON DELETE SET NULL
         );
+        CREATE TABLE IF NOT EXISTS insight_actions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          insight_id INTEGER NOT NULL,
+          action_id INTEGER NOT NULL,
+          priority TEXT NOT NULL DEFAULT 'medium',
+          reason TEXT NOT NULL,
+          created_time TEXT NOT NULL,
+          UNIQUE(insight_id, action_id),
+          FOREIGN KEY(insight_id) REFERENCES insights(id) ON DELETE CASCADE,
+          FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS customer_developments (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           customer_id INTEGER NOT NULL,
@@ -816,6 +1043,18 @@ def init_db():
           FOREIGN KEY(profile_id) REFERENCES customer_profiles(id) ON DELETE CASCADE,
           FOREIGN KEY(applied_fact_id) REFERENCES customer_profile_facts(id) ON DELETE SET NULL
         );
+        CREATE TABLE IF NOT EXISTS customer_profile_refresh_jobs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_profile_id INTEGER NOT NULL,
+          sources TEXT NOT NULL DEFAULT '[]',
+          mode TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'queued',
+          start_time TEXT,
+          end_time TEXT,
+          error_message TEXT NOT NULL DEFAULT '',
+          result_json TEXT NOT NULL DEFAULT '{}',
+          FOREIGN KEY(customer_profile_id) REFERENCES customer_profiles(id) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS customer_profile_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           customer_id INTEGER NOT NULL,
@@ -968,6 +1207,53 @@ def init_db():
            created_at TEXT NOT NULL,
            updated_at TEXT NOT NULL
          );
+        CREATE TABLE IF NOT EXISTS relationship_score_models (
+          model_id TEXT PRIMARY KEY,
+          model_name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'DRAFT',
+          created_by TEXT NOT NULL,
+          created_time TEXT NOT NULL,
+          updated_time TEXT NOT NULL,
+          CHECK (status IN ('DRAFT', 'TESTING', 'PUBLISHED', 'DISABLED'))
+        );
+        CREATE TABLE IF NOT EXISTS relationship_score_model_versions (
+          version_id TEXT PRIMARY KEY,
+          model_id TEXT NOT NULL,
+          version_no TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'DRAFT',
+          created_by TEXT NOT NULL,
+          created_time TEXT NOT NULL,
+          published_time TEXT,
+          UNIQUE(model_id, version_no),
+          CHECK (status IN ('DRAFT', 'TESTING', 'PUBLISHED', 'DISABLED')),
+          FOREIGN KEY(model_id) REFERENCES relationship_score_models(model_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS relationship_score_dimensions (
+          dimension_id TEXT PRIMARY KEY,
+          version_id TEXT NOT NULL,
+          dimension_code TEXT NOT NULL,
+          dimension_name TEXT NOT NULL,
+          weight REAL NOT NULL DEFAULT 0,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          description TEXT NOT NULL DEFAULT '',
+          UNIQUE(version_id, dimension_code),
+          FOREIGN KEY(version_id) REFERENCES relationship_score_model_versions(version_id) ON DELETE CASCADE,
+          CHECK (weight >= 0)
+        );
+        CREATE TABLE IF NOT EXISTS relationship_score_rules (
+          rule_id TEXT NOT NULL,
+          dimension_id TEXT NOT NULL,
+          rule_type TEXT NOT NULL,
+          condition_json TEXT NOT NULL DEFAULT '{}',
+          score REAL NOT NULL DEFAULT 0,
+          priority INTEGER NOT NULL DEFAULT 0,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          PRIMARY KEY(rule_id, dimension_id),
+          FOREIGN KEY(dimension_id) REFERENCES relationship_score_dimensions(dimension_id) ON DELETE CASCADE,
+          CHECK (rule_type IN ('RANGE', 'TIME', 'ENUM')),
+          CHECK (priority >= 0)
+        );
         CREATE TABLE IF NOT EXISTS relationship_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           relationship_id INTEGER NOT NULL,
@@ -1002,7 +1288,20 @@ def init_db():
             db.execute("ALTER TABLE opportunities ADD COLUMN project_id INTEGER")
         if "project_section_id" not in columns:
             db.execute("ALTER TABLE opportunities ADD COLUMN project_section_id INTEGER")
+        insight_columns = {row[1] for row in db.execute("PRAGMA table_info(insights)").fetchall()}
+        if "customer_id" not in insight_columns:
+            db.execute("ALTER TABLE insights ADD COLUMN customer_id INTEGER")
+        default_customer = db.execute("SELECT id FROM customers ORDER BY id LIMIT 1").fetchone()
+        if default_customer:
+            db.execute(
+                "UPDATE insights SET customer_id = ? WHERE customer_id IS NULL",
+                (default_customer["id"],),
+            )
         for table, column, definition in [
+            ("customers", "customer_level", "TEXT"),
+            ("persons", "role", "TEXT"),
+            ("fact_candidates", "fact_quality_score", "INTEGER"),
+            ("fact_candidates", "fact_quality_level", "TEXT"),
             ("projects", "customer_organization_id", "INTEGER"),
             ("persons", "customer_organization_id", "INTEGER"),
             ("opportunities", "customer_organization_id", "INTEGER"),
@@ -1032,9 +1331,21 @@ def init_db():
                 for tag in tags.split(','):
                     db.execute("INSERT INTO semantic_fields (opportunity_id, field_name, field_type, field_value) VALUES (?, ?, ?, ?)", (oid, "业务标签", "semantic_tag", tag))
                 db.execute("INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)", (oid, "created", "商机对象已初始化", now))
+        refresh_job_columns = {
+            row[1] for row in db.execute("PRAGMA table_info(customer_profile_refresh_jobs)").fetchall()
+        }
+        if "result_json" not in refresh_job_columns:
+            db.execute(
+                "ALTER TABLE customer_profile_refresh_jobs ADD COLUMN result_json TEXT NOT NULL DEFAULT '{}'"
+            )
         backfill_opportunity_relations(db, now)
         seed_organization_ontology(db, now)
         db.execute("CREATE INDEX IF NOT EXISTS idx_opportunities_customer_id ON opportunities(customer_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_insights_type_created_time ON insights(type, created_time DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_insights_customer_id ON insights(customer_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_insight_scores_score ON insight_scores(score DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_opportunity_insights_opportunity_id ON opportunity_insights(opportunity_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_opportunity_insights_insight_id ON opportunity_insights(insight_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_opportunities_project_id ON opportunities(project_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_opportunities_customer_org_id ON opportunities(customer_organization_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_opportunities_sales_assignment_id ON opportunities(sales_assignment_id)")
@@ -1054,7 +1365,19 @@ def init_db():
         db.execute("CREATE INDEX IF NOT EXISTS idx_customer_development_projects_development_id ON customer_development_projects(customer_development_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_customer_development_projects_project_id ON customer_development_projects(project_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_actions_customer_development_id ON actions(customer_development_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_insight_actions_insight_id ON insight_actions(insight_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_insight_actions_action_id ON insight_actions(action_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profiles_customer_id ON customer_profiles(customer_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_facts_customer_type_status ON customer_facts(customer_id, fact_type, status)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_facts_source ON customer_facts(source_type, source_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_fact_candidates_review_queue ON fact_candidates(status, confidence DESC, created_time DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_fact_candidates_quality_queue ON fact_candidates(status, fact_quality_score DESC, confidence DESC, created_time DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_fact_candidates_subject ON fact_candidates(subject_type, subject_id, status)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_fact_candidates_source ON fact_candidates(source_type, source_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_ontology_fact_values_subject ON ontology_fact_values(subject_type, subject_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_fact_candidate_review_logs_candidate ON fact_candidate_review_logs(fact_candidate_id, review_time DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_fact_conflicts_open ON fact_conflicts(resolution_status, fact_id_1, fact_id_2)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_fact_ontology_sync_logs_candidate ON fact_ontology_sync_logs(fact_candidate_id, attempt_no DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profiles_status ON customer_profiles(status)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_facts_profile_id ON customer_profile_facts(profile_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_scores_profile_id ON customer_profile_scores(profile_id)")
@@ -1068,6 +1391,7 @@ def init_db():
         db.execute("CREATE INDEX IF NOT EXISTS idx_customer_fact_extraction_runs_customer_id ON customer_fact_extraction_runs(customer_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_customer_fact_extraction_candidates_run_id ON customer_fact_extraction_candidates(run_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_customer_fact_extraction_candidates_profile_fact ON customer_fact_extraction_candidates(profile_id, fact_code)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_refresh_jobs_profile_status ON customer_profile_refresh_jobs(customer_profile_id, status, id DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_events_customer_id ON customer_profile_events(customer_id, created_at)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_events_profile_status ON customer_profile_events(profile_id, status, created_at)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_customer_profile_events_source ON customer_profile_events(source_object_type, source_object_id)")
@@ -1080,18 +1404,108 @@ def init_db():
         db.execute("CREATE INDEX IF NOT EXISTS idx_relationships_type_id ON relationships(relationship_type_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_scores_relationship_id ON relationship_scores(relationship_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_score_configs_status ON relationship_score_configs(status, is_default)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_score_models_status_updated ON relationship_score_models(status, updated_time DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_score_model_versions_model ON relationship_score_model_versions(model_id, created_time DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_score_model_versions_status ON relationship_score_model_versions(model_id, status)")
+        db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_relationship_score_model_versions_one_published
+                     ON relationship_score_model_versions(model_id)
+                     WHERE status = 'PUBLISHED'""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_score_dimensions_version ON relationship_score_dimensions(version_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_score_dimensions_enabled ON relationship_score_dimensions(version_id, enabled)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_score_rules_dimension_priority ON relationship_score_rules(dimension_id, priority, rule_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_score_rules_enabled ON relationship_score_rules(dimension_id, enabled)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_relationship_events_relationship_id ON relationship_events(relationship_id)")
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_opportunities_project_section_id ON opportunities(project_section_id) WHERE project_section_id IS NOT NULL")
+        db.execute("""CREATE TABLE IF NOT EXISTS customer_potential_predictions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_id INTEGER NOT NULL,
+          potential_score INTEGER NOT NULL CHECK (potential_score BETWEEN 0 AND 100),
+          potential_level TEXT NOT NULL,
+          annual_potential REAL NOT NULL DEFAULT 0,
+          development_priority TEXT NOT NULL,
+          dimensions_json TEXT NOT NULL DEFAULT '{}',
+          input_snapshot_json TEXT NOT NULL DEFAULT '{}',
+          model_version TEXT NOT NULL,
+          assessed_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_potential_predictions_customer ON customer_potential_predictions(customer_id, assessed_at DESC)")
+        db.execute("""CREATE TABLE IF NOT EXISTS customer_conversion_predictions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_id INTEGER NOT NULL,
+          conversion_probability INTEGER NOT NULL CHECK (conversion_probability BETWEEN 0 AND 100),
+          expected_conversion_days INTEGER NOT NULL,
+          expected_conversion_at TEXT NOT NULL,
+          blockers_json TEXT NOT NULL DEFAULT '[]',
+          recommended_actions_json TEXT NOT NULL DEFAULT '[]',
+          evidence_snapshot_json TEXT NOT NULL DEFAULT '{}',
+          model_version TEXT NOT NULL,
+          assessed_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_conversion_predictions_customer ON customer_conversion_predictions(customer_id, assessed_at DESC)")
+        db.execute("""CREATE TABLE IF NOT EXISTS customer_value_predictions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_id INTEGER NOT NULL,
+          value_score INTEGER NOT NULL CHECK (value_score BETWEEN 0 AND 100),
+          future_revenue REAL NOT NULL DEFAULT 0,
+          growth_space REAL NOT NULL DEFAULT 0,
+          dimensions_json TEXT NOT NULL DEFAULT '{}',
+          input_snapshot_json TEXT NOT NULL DEFAULT '{}',
+          model_version TEXT NOT NULL,
+          assessed_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_value_predictions_customer ON customer_value_predictions(customer_id, assessed_at DESC)")
+        db.execute("""CREATE TABLE IF NOT EXISTS customer_growth_predictions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_id INTEGER NOT NULL,
+          growth_score INTEGER NOT NULL CHECK (growth_score BETWEEN 0 AND 100),
+          growth_direction TEXT NOT NULL CHECK (growth_direction IN ('UP', 'FLAT', 'DOWN')),
+          growth_reason_json TEXT NOT NULL DEFAULT '[]',
+          input_snapshot_json TEXT NOT NULL DEFAULT '{}',
+          model_version TEXT NOT NULL,
+          assessed_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_growth_predictions_customer ON customer_growth_predictions(customer_id, assessed_at DESC)")
+        db.execute("""CREATE TABLE IF NOT EXISTS customer_growth_intelligence_reports (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          customer_id INTEGER NOT NULL,
+          strategy_report_json TEXT NOT NULL DEFAULT '{}',
+          key_person_advice_json TEXT NOT NULL DEFAULT '[]',
+          visit_strategy_json TEXT NOT NULL DEFAULT '{}',
+          next_actions_json TEXT NOT NULL DEFAULT '[]',
+          prediction_snapshot_json TEXT NOT NULL DEFAULT '{}',
+          input_snapshot_json TEXT NOT NULL DEFAULT '{}',
+          model_version TEXT NOT NULL,
+          generated_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_customer_growth_intelligence_customer ON customer_growth_intelligence_reports(customer_id, generated_at DESC)")
         agent_count = db.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
         if agent_count == 0:
             for agent_id, name, scene, description, skills, assets in SEED_AGENTS:
                 db.execute("INSERT INTO agents (id, name, scene, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", (agent_id, name, scene, description, now, now))
                 for skill in skills.split(','):
                     db.execute("INSERT INTO agent_skills (agent_id, name, description, linked_assets) VALUES (?, ?, ?, ?)", (agent_id, skill, f"{skill}：读取客户、商机与涂料行业语义后生成可解释结果。", assets))
+        analysis_agent = next(item for item in SEED_AGENTS if item[0] == "opportunity-analysis")
+        db.execute("INSERT OR IGNORE INTO agents (id, name, scene, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", (analysis_agent[0], analysis_agent[1], analysis_agent[2], analysis_agent[3], now, now))
+        db.execute("INSERT OR IGNORE INTO agent_skills (agent_id, name, description, linked_assets) VALUES (?, ?, ?, ?)", (analysis_agent[0], "商机事实查询", "查询商机相关的已确认事实，并标记待核对信息。", analysis_agent[5]))
         seed_initial_actions(db, now)
         seed_customer_developments(db, now)
         seed_customer_development_links(db, now)
         seed_customer_profiles(db, now)
+        seed_customer_facts(db, now)
+        seed_insights(db, now)
+        seed_insight_scores(db, now)
+        seed_opportunity_insights(db, now)
+        seed_insight_actions(db, now)
         seed_customer_profile_scoring_models(db, now)
         seed_relationship_ontology(db, now)
         seed_relationship_score_config(db, now)
@@ -1377,6 +1791,8 @@ def get_project_parties(db, project_id):
 def serialize_action(row):
     item = dict(row)
     item["isCompleted"] = item.get("status") == "completed"
+    if "insight_score" in item:
+        item["insightScore"] = item.pop("insight_score")
     item["isOverdue"] = bool(
         item.get("due_at")
         and item.get("status") not in {"completed", "cancelled"}
@@ -1404,6 +1820,12 @@ def get_actions(db, opportunity_id=None, project_id=None, status=None, customer_
         f"""SELECT a.*, ag.name AS source_agent_name
             FROM actions a
             LEFT JOIN agents ag ON ag.id = a.source_agent_id
+            LEFT JOIN (
+              SELECT ia.action_id, MAX(s.score) AS insight_score
+              FROM insight_actions ia
+              JOIN insight_scores s ON s.insight_id = ia.insight_id
+              GROUP BY ia.action_id
+            ) insight_priority ON insight_priority.action_id = a.id
             {where}
             ORDER BY CASE a.status
                        WHEN 'in_progress' THEN 1
@@ -1412,6 +1834,7 @@ def get_actions(db, opportunity_id=None, project_id=None, status=None, customer_
                        WHEN 'completed' THEN 4
                        ELSE 5
                      END,
+                     COALESCE(insight_priority.insight_score, 0) DESC,
                      CASE WHEN a.due_at IS NULL THEN 1 ELSE 0 END,
                      a.due_at, a.updated_at DESC, a.id DESC""",
         tuple(values),
@@ -2192,6 +2615,133 @@ def get_customer_fact_extraction_run(db, run_id):
         item["candidates"].append(candidate_item)
     return item
 
+def list_customer_fact_extraction_candidates(db, run_id, status=None):
+    clauses = ["run_id = ?"]
+    values = [run_id]
+    if status:
+        clauses.append("status = ?")
+        values.append(str(status).strip())
+    rows = db.execute(
+        f"""SELECT * FROM customer_fact_extraction_candidates
+            WHERE {' AND '.join(clauses)}
+            ORDER BY confidence DESC, id""",
+        tuple(values),
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["value"] = _json_value(item.pop("value_json"), None)
+        result.append(item)
+    return result
+
+def _refresh_fact_extraction_run_counts(db, run_id):
+    counts = db.execute(
+        """SELECT
+             COUNT(*) AS candidate_count,
+             SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) AS accepted_count,
+             SUM(CASE WHEN status = 'needs_review' THEN 1 ELSE 0 END) AS review_count
+           FROM customer_fact_extraction_candidates
+           WHERE run_id = ?""",
+        (run_id,),
+    ).fetchone()
+    db.execute(
+        """UPDATE customer_fact_extraction_runs
+           SET candidate_count = ?, accepted_count = ?, review_count = ?
+           WHERE id = ?""",
+        (
+            counts["candidate_count"] or 0,
+            counts["accepted_count"] or 0,
+            counts["review_count"] or 0,
+            run_id,
+        ),
+    )
+
+def review_customer_fact_extraction_candidate(db, candidate_id, decision, payload=None, now=None):
+    now = now or datetime.now(timezone.utc).isoformat()
+    payload = payload or {}
+    candidate = db.execute(
+        """SELECT c.*, r.status AS run_status
+           FROM customer_fact_extraction_candidates c
+           JOIN customer_fact_extraction_runs r ON r.id = c.run_id
+           WHERE c.id = ?""",
+        (candidate_id,),
+    ).fetchone()
+    if not candidate:
+        raise LookupError("customer fact extraction candidate not found")
+    decision = str(decision or "").strip().lower()
+    if decision not in {"accept", "reject"}:
+        raise ValueError("decision must be accept or reject")
+    if candidate["status"] == "accepted" and decision == "accept":
+        return get_customer_fact_extraction_run(db, candidate["run_id"])
+    if candidate["status"] == "rejected" and decision == "reject":
+        return get_customer_fact_extraction_run(db, candidate["run_id"])
+    if candidate["status"] == "supporting":
+        raise ValueError("supporting candidates cannot be reviewed directly")
+    if candidate["status"] == "preview":
+        raise ValueError("preview candidates cannot be reviewed")
+
+    if decision == "reject":
+        db.execute(
+            "UPDATE customer_fact_extraction_candidates SET status = 'rejected', reviewed_at = ? WHERE id = ?",
+            (now, candidate_id),
+        )
+    else:
+        value = payload["value"] if "value" in payload else _json_value(candidate["value_json"], None)
+        fact_code = candidate["fact_code"]
+        definition = _fact_definition(fact_code)
+        fact_name = str(payload.get("factName") or candidate["fact_name"]).strip()
+        source_id = f"extraction:{candidate['run_id']}:{candidate['source_object_type']}:{candidate['source_object_id']}"
+        db.execute(
+            """INSERT INTO customer_profile_facts
+               (profile_id, fact_code, fact_name, category, value_type, value_json, unit,
+                confidence, source_type, source_id, observed_at, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, 'current', ?, ?)
+               ON CONFLICT(profile_id, fact_code) DO UPDATE SET
+                 fact_name = excluded.fact_name, category = excluded.category,
+                 value_type = excluded.value_type, value_json = excluded.value_json,
+                 confidence = excluded.confidence, source_type = excluded.source_type,
+                 source_id = excluded.source_id, observed_at = excluded.observed_at,
+                 status = excluded.status, updated_at = excluded.updated_at""",
+            (
+                candidate["profile_id"],
+                fact_code,
+                fact_name or (definition["name"] if definition else fact_code),
+                candidate["category"],
+                candidate["value_type"],
+                json.dumps(value, ensure_ascii=False),
+                payload.get("confidence", candidate["confidence"]),
+                "fact_review",
+                source_id,
+                candidate["observed_at"],
+                now,
+                now,
+            ),
+        )
+        fact = db.execute(
+            "SELECT id FROM customer_profile_facts WHERE profile_id = ? AND fact_code = ?",
+            (candidate["profile_id"], fact_code),
+        ).fetchone()
+        db.execute(
+            """UPDATE customer_fact_extraction_candidates
+               SET status = 'accepted', applied_fact_id = ?, value_json = ?, reviewed_at = ?
+               WHERE id = ?""",
+            (fact["id"], json.dumps(value, ensure_ascii=False), now, candidate_id),
+        )
+        db.execute(
+            """UPDATE customer_profiles
+               SET updated_at = ?
+               WHERE id = ?""",
+            (now, candidate["profile_id"]),
+        )
+        db.execute(
+            """UPDATE customer_profile_summaries
+               SET status = 'stale', updated_at = ?
+               WHERE profile_id = ? AND status = 'published'""",
+            (now, candidate["profile_id"]),
+        )
+    _refresh_fact_extraction_run_counts(db, candidate["run_id"])
+    return get_customer_fact_extraction_run(db, candidate["run_id"])
+
 def run_customer_fact_extraction(db, profile_id, source_types=None, dry_run=False, trigger_type="manual", now=None):
     now = now or datetime.now(timezone.utc).isoformat()
     profile = _profile_row(db, profile_id)
@@ -2474,7 +3024,8 @@ def recalculate_customer_profile_scores(db, profile_id, now, source_agent_run_id
         if dimension["calculation_type"] == "weighted_average":
             continue
         matched_rules = [rule for rule in dimension["rules"] if rule["enabled"] and _scoring_condition_matches(rule["condition"], metrics, fact_map)]
-        raw_score = sum(float(rule["score"]) for rule in matched_rules)
+        base_score = float((dimension["config"] or {}).get("baseScore", 0))
+        raw_score = base_score + sum(float(rule["score"]) for rule in matched_rules)
         score = int(max(dimension["score_min"], min(dimension["score_max"], round(raw_score))))
         dimension_scores[dimension["dimension_code"]] = score
         score_details[dimension["dimension_code"]] = {
@@ -2841,6 +3392,380 @@ def generate_customer_profile_summary(db, profile_id, now):
     )
     return get_customer_profile(db, profile_id)
 
+class ProfileRefreshService:
+    """在一个事务中执行客户画像刷新流水线。"""
+
+    def execute(self, db, profile_id, source_types=None, dry_run=False, trigger_type="manual", now=None):
+        now = now or datetime.now(timezone.utc).isoformat()
+        profile = _profile_row(db, profile_id)
+        if not profile:
+            raise LookupError("customer profile not found")
+        if dry_run:
+            return self._execute_preview(db, profile_id, source_types, trigger_type, now)
+        return self._execute_formal(db, profile_id, source_types, trigger_type, now)
+
+    def _execute_formal(self, db, profile_id, source_types, trigger_type, now):
+        """执行完整流水线；调用方负责提交或回滚事务。"""
+        profile = _profile_row(db, profile_id)
+        before_facts = self._fact_snapshot(db, profile_id)
+        before_scores = self._score_snapshot(db, profile_id)
+        before_summary = self._summary_snapshot(db, profile_id)
+        sync_customer_profile_relations(db, profile_id, profile["customer_id"], now)
+        extraction = run_customer_fact_extraction(
+            db,
+            profile_id,
+            source_types=source_types,
+            dry_run=False,
+            trigger_type=trigger_type,
+            now=now,
+        )
+        scores = recalculate_customer_profile_scores(
+            db,
+            profile_id,
+            now,
+            extraction.get("agent_run_id"),
+        )
+        db.execute(
+            """UPDATE customer_profile_summaries
+               SET status = 'stale', updated_at = ?
+               WHERE profile_id = ? AND status = 'published'""",
+            (now, profile_id),
+        )
+        summary = generate_customer_profile_summary(db, profile_id, now)
+        result = {
+            "profileId": profile_id,
+            "dryRun": False,
+            "extraction": extraction,
+            "scores": scores,
+            "summary": summary["summaries"][0] if summary and summary.get("summaries") else None,
+            "profile": summary,
+        }
+        result.update(self._build_result_diff(
+            before_facts,
+            before_scores,
+            before_summary,
+            self._fact_snapshot(db, profile_id),
+            self._score_snapshot(db, profile_id),
+            self._summary_snapshot(db, profile_id),
+            int(extraction.get("review_count", 0)),
+        ))
+        return result
+
+    def _fact_snapshot(self, db, profile_id):
+        rows = db.execute(
+            """SELECT fact_code, fact_name, value_json, confidence, source_type
+               FROM customer_profile_facts WHERE profile_id = ?""",
+            (profile_id,),
+        ).fetchall()
+        return {
+            row["fact_code"]: {
+                "fact_code": row["fact_code"],
+                "fact_name": row["fact_name"],
+                "value": _json_value(row["value_json"], None),
+                "confidence": row["confidence"],
+                "source_type": row["source_type"],
+            }
+            for row in rows
+        }
+
+    def _score_snapshot(self, db, profile_id):
+        rows = db.execute(
+            """SELECT score_type, score, level, reason
+               FROM customer_profile_scores
+               WHERE profile_id = ?
+               ORDER BY assessed_at DESC, id DESC""",
+            (profile_id,),
+        ).fetchall()
+        result = {}
+        for row in rows:
+            result.setdefault(row["score_type"], {
+                "score_type": row["score_type"],
+                "score": row["score"],
+                "level": row["level"],
+                "reason": row["reason"],
+            })
+        return result
+
+    def _summary_snapshot(self, db, profile_id):
+        row = db.execute(
+            """SELECT title, content, structured_json
+               FROM customer_profile_summaries
+               WHERE profile_id = ? AND status = 'published'
+               ORDER BY id DESC LIMIT 1""",
+            (profile_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "title": row["title"],
+            "content": row["content"],
+            "structured": _json_value(row["structured_json"], {}),
+        }
+
+    def _build_result_diff(self, before_facts, before_scores, before_summary,
+                           after_facts, after_scores, after_summary, pending_candidates):
+        new_facts = [value for key, value in after_facts.items() if key not in before_facts]
+        deleted_facts = [value for key, value in before_facts.items() if key not in after_facts]
+        score_changes = []
+        for score_type in sorted(set(before_scores) | set(after_scores)):
+            before = before_scores.get(score_type)
+            after = after_scores.get(score_type)
+            if before != after:
+                score_changes.append({"score_type": score_type, "before": before, "after": after})
+        return {
+            "newFacts": new_facts,
+            "deletedFacts": deleted_facts,
+            "scoreChanges": score_changes,
+            "summaryChange": {"before": before_summary, "after": after_summary},
+            "pendingCandidateCount": pending_candidates,
+        }
+
+    def _execute_preview(self, db, profile_id, source_types, trigger_type, now):
+        before_facts = self._fact_snapshot(db, profile_id)
+        before_scores = self._score_snapshot(db, profile_id)
+        before_summary = self._summary_snapshot(db, profile_id)
+        savepoint = f"profile_refresh_preview_{profile_id}"
+        db.execute(f"SAVEPOINT {savepoint}")
+        try:
+            formal_result = self._execute_formal(db, profile_id, source_types, trigger_type, now)
+            after_facts = self._fact_snapshot(db, profile_id)
+            after_scores = self._score_snapshot(db, profile_id)
+            after_summary = self._summary_snapshot(db, profile_id)
+            pending_candidates = int(formal_result.get("extraction", {}).get("review_count", 0))
+            diff = self._build_result_diff(
+                before_facts, before_scores, before_summary,
+                after_facts, after_scores, after_summary, pending_candidates,
+            )
+            db.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            db.execute(f"RELEASE SAVEPOINT {savepoint}")
+            return {
+                "profileId": profile_id,
+                "dryRun": True,
+                "mode": "preview",
+                **diff,
+                "extraction": formal_result.get("extraction"),
+                "scores": [],
+                "summary": None,
+            }
+        except Exception:
+            db.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            db.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+
+
+def refresh_customer_profile(db, profile_id, source_types=None, dry_run=False, trigger_type="manual", now=None):
+    """保留旧调用入口，由 ProfileRefreshService 执行实际刷新。"""
+    return ProfileRefreshService().execute(
+        db,
+        profile_id,
+        source_types=source_types,
+        dry_run=dry_run,
+        trigger_type=trigger_type,
+        now=now,
+    )
+
+
+REFRESH_JOB_SOURCE_VALUES = {"ALL", "CRM", "PROJECT", "CONVERSATION", "MANUAL_FACT"}
+REFRESH_JOB_SOURCE_TYPES = {
+    "CRM": ["visit_record", "action", "opportunity", "person"],
+    "PROJECT": ["project"],
+    "CONVERSATION": ["visit_record"],
+    # Manual facts are already part of the profile context; use the full
+    # supported source set so a manual-only refresh still recalculates safely.
+    "MANUAL_FACT": list(FACT_EXTRACTION_SOURCE_TYPES),
+}
+
+
+def _refresh_job_source_types(sources):
+    if "ALL" in sources:
+        return list(FACT_EXTRACTION_SOURCE_TYPES)
+    source_types = []
+    for source in sources:
+        for source_type in REFRESH_JOB_SOURCE_TYPES.get(source, []):
+            if source_type not in source_types:
+                source_types.append(source_type)
+    return source_types or list(FACT_EXTRACTION_SOURCE_TYPES)
+
+
+def create_customer_profile_refresh_job(db, profile_id, sources, mode, now=None):
+    now = now or datetime.now(timezone.utc).isoformat()
+    if not _profile_row(db, profile_id):
+        raise LookupError("customer profile not found")
+    if not isinstance(sources, list) or not sources:
+        raise ValueError("sources must be a non-empty array")
+    normalized_sources = [str(source).strip().upper() for source in sources]
+    invalid_sources = [source for source in normalized_sources if source not in REFRESH_JOB_SOURCE_VALUES]
+    if invalid_sources:
+        raise ValueError(f"unsupported refresh source: {invalid_sources[0]}")
+    if mode not in {"formal", "preview"}:
+        raise ValueError("mode must be formal or preview")
+    cursor = db.execute(
+        """INSERT INTO customer_profile_refresh_jobs
+           (customer_profile_id, sources, mode, status, start_time, end_time, error_message)
+           VALUES (?, ?, ?, 'queued', NULL, NULL, '')""",
+        (profile_id, json.dumps(normalized_sources, ensure_ascii=False), mode),
+    )
+    db.commit()
+    return {"jobId": cursor.lastrowid, "customerProfileId": profile_id, "status": "queued"}
+
+
+def run_customer_profile_refresh_job(job_id):
+    """后台执行刷新；画像写入和任务完成状态分别受事务保护。"""
+    started_at = datetime.now(timezone.utc).isoformat()
+    db = connect()
+    try:
+        job = db.execute("SELECT * FROM customer_profile_refresh_jobs WHERE id = ?", (job_id,)).fetchone()
+        if not job:
+            return
+        db.execute(
+            "UPDATE customer_profile_refresh_jobs SET status = 'running', start_time = ?, error_message = '' WHERE id = ?",
+            (started_at, job_id),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    try:
+        sources = json.loads(job["sources"] or "[]")
+        source_types = _refresh_job_source_types(sources)
+        db = connect()
+        try:
+            result = refresh_customer_profile(
+                db,
+                job["customer_profile_id"],
+                source_types=source_types,
+                dry_run=job["mode"] == "preview",
+                trigger_type="manual",
+                now=started_at,
+            )
+            ended_at = datetime.now(timezone.utc).isoformat()
+            db.execute(
+                "UPDATE customer_profile_refresh_jobs SET status = 'completed', end_time = ?, error_message = '', result_json = ? WHERE id = ?",
+                (ended_at, json.dumps(result, ensure_ascii=False), job_id),
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    except Exception as error:
+        ended_at = datetime.now(timezone.utc).isoformat()
+        db = connect()
+        try:
+            db.execute(
+                "UPDATE customer_profile_refresh_jobs SET status = 'failed', end_time = ?, error_message = ? WHERE id = ?",
+                (ended_at, str(error), job_id),
+            )
+            db.commit()
+        finally:
+            db.close()
+
+
+def get_customer_profile_refresh_job_status(db, job_id):
+    row = db.execute(
+        """SELECT id, status, error_message, result_json
+           FROM customer_profile_refresh_jobs
+           WHERE id = ?""",
+        (job_id,),
+    ).fetchone()
+    if not row:
+        return None
+    progress_by_status = {"queued": 0, "running": 50, "completed": 100, "failed": 100}
+    message_by_status = {
+        "queued": "等待刷新任务执行",
+        "running": "正在刷新客户画像",
+        "completed": "客户画像刷新完成",
+        "failed": "客户画像刷新失败",
+    }
+    status = row["status"]
+    result = _json_value(row["result_json"], None)
+    response = {
+        "status": status,
+        "progress": progress_by_status.get(status, 0),
+        "message": message_by_status.get(status, "刷新任务状态未知"),
+        "error_message": row["error_message"] or "",
+    }
+    if result:
+        response["result"] = result
+    return response
+
+def upsert_customer_profile_fact(db, profile_id, payload, now=None):
+    now = now or datetime.now(timezone.utc).isoformat()
+    profile = _profile_row(db, profile_id)
+    if not profile:
+        raise LookupError("customer profile not found")
+    fact_code = str(payload.get("factCode", payload.get("fact_code", ""))).strip()
+    if not fact_code:
+        raise ValueError("factCode is required")
+    if "value" not in payload:
+        raise ValueError("value is required")
+    definition = next((item for item in PROFILE_FACT_DEFINITIONS if item[0] == fact_code), None)
+    fact_name = str(payload.get("factName") or (definition[1] if definition else fact_code)).strip()
+    db.execute(
+        """INSERT INTO customer_profile_facts
+           (profile_id, fact_code, fact_name, category, value_type, value_json, unit,
+            confidence, source_type, source_id, observed_at, valid_from, valid_to, status,
+            created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(profile_id, fact_code) DO UPDATE SET
+             fact_name = excluded.fact_name, category = excluded.category,
+             value_type = excluded.value_type, value_json = excluded.value_json,
+             unit = excluded.unit, confidence = excluded.confidence,
+             source_type = excluded.source_type, source_id = excluded.source_id,
+             observed_at = excluded.observed_at, valid_from = excluded.valid_from,
+             valid_to = excluded.valid_to, status = excluded.status,
+             updated_at = excluded.updated_at""",
+        (
+            profile_id,
+            fact_code,
+            fact_name,
+            str(payload.get("category") or (definition[2] if definition else "general")),
+            str(payload.get("valueType") or (definition[3] if definition else "text")),
+            json.dumps(payload["value"], ensure_ascii=False),
+            str(payload.get("unit", "")).strip(),
+            payload.get("confidence"),
+            str(payload.get("sourceType", "manual")).strip() or "manual",
+            str(payload.get("sourceId", "")).strip(),
+            payload.get("observedAt") or now,
+            payload.get("validFrom"),
+            payload.get("validTo"),
+            str(payload.get("status", "current")).strip() or "current",
+            now,
+            now,
+        ),
+    )
+    db.execute(
+        """UPDATE customer_profiles
+           SET updated_at = ?
+           WHERE id = ?""",
+        (now, profile_id),
+    )
+    row = db.execute(
+        "SELECT * FROM customer_profile_facts WHERE profile_id = ? AND fact_code = ?",
+        (profile_id, fact_code),
+    ).fetchone()
+    item = dict(row)
+    item["value"] = _json_value(item.pop("value_json"), None)
+    return item
+
+def delete_customer_profile_fact(db, profile_id, fact_id, now=None):
+    now = now or datetime.now(timezone.utc).isoformat()
+    if not _profile_row(db, profile_id):
+        raise LookupError("customer profile not found")
+    cur = db.execute(
+        "DELETE FROM customer_profile_facts WHERE profile_id = ? AND id = ?",
+        (profile_id, fact_id),
+    )
+    if not cur.rowcount:
+        raise LookupError("customer profile fact not found")
+    db.execute(
+        "UPDATE customer_profiles SET updated_at = ? WHERE id = ?",
+        (now, profile_id),
+    )
+    return {"status": "deleted", "profileId": profile_id, "factId": fact_id}
+
 def seed_customer_profiles(db, now):
     if db.execute("SELECT COUNT(*) FROM customer_profiles").fetchone()[0]:
         return
@@ -2931,7 +3856,183 @@ def seed_customer_profiles(db, now):
         )
     generate_customer_profile_summary(db, profile_id, now)
 
+
+def seed_insights(db, now):
+    """初始化第一阶段 Insight 演示数据，重复初始化不会产生重复记录。"""
+    if db.execute("SELECT COUNT(*) FROM insights").fetchone()[0] > 0:
+        return
+    customer = db.execute("SELECT id FROM customers ORDER BY id LIMIT 1").fetchone()
+    if not customer:
+        return
+    db.executemany(
+        """INSERT INTO insights (customer_id, name, type, description, source, created_time)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        [(customer["id"], *insight, now) for insight in SEED_INSIGHTS],
+    )
+
+
+def seed_insight_scores(db, now):
+    """为已有 Insight 初始化评分，评分结果可被 Action 和 Agent 直接复用。"""
+    repository = InsightScoreRepository(db)
+    for row in db.execute("SELECT id FROM insights ORDER BY id").fetchall():
+        repository.score(row["id"], now)
+
+
+def seed_opportunity_insights(db, now):
+    """为首个演示商机建立四类商机洞察关联。"""
+    opportunity = db.execute("SELECT id FROM opportunities ORDER BY id LIMIT 1").fetchone()
+    if not opportunity:
+        return
+    insight_rows = db.execute(
+        """SELECT id FROM insights
+           WHERE type IN ('Opportunity', 'Risk', 'Breakthrough', 'Competition')
+           ORDER BY id"""
+    ).fetchall()
+    db.executemany(
+        """INSERT OR IGNORE INTO opportunity_insights
+           (opportunity_id, insight_id, created_time)
+           VALUES (?, ?, ?)""",
+        [(opportunity["id"], row["id"], now) for row in insight_rows],
+    )
+
+
+def seed_insight_actions(db, now):
+    """初始化一条 Insight -> Action 闭环演示数据。"""
+    insight = db.execute(
+        """SELECT * FROM insights
+           WHERE type = 'Breakthrough' ORDER BY id LIMIT 1"""
+    ).fetchone()
+    opportunity = db.execute("SELECT * FROM opportunities ORDER BY id LIMIT 1").fetchone()
+    if not insight or not opportunity:
+        return
+    if db.execute(
+        "SELECT 1 FROM insight_actions WHERE insight_id = ? LIMIT 1", (insight["id"],)
+    ).fetchone():
+        return
+    action = create_action_record(
+        db,
+        title="创建设计院拜访任务",
+        description="根据 Insight 制定设计院关系突破拜访，确认关键设计影响人。",
+        action_type="visit",
+        priority="high",
+        opportunity_id=opportunity["id"],
+        customer_id=insight["customer_id"],
+        source_type="insight",
+        source_id=f"insight:{insight['id']}",
+        created_by="AI Insight Agent",
+        dedupe_key=f"insight:{insight['id']}:创建设计院拜访任务",
+        now=now,
+    )
+    if action:
+        InsightActionRepository(db).create(
+            insight["id"],
+            action["id"],
+            "high",
+            "该洞察表明设计院关系不足，需要通过拜访建立关键关系。",
+            now,
+        )
+
+
+def seed_customer_facts(db, now):
+    """初始化默认客户事实和 CustomerFact 联调测试数据。"""
+    customer = db.execute("SELECT id, name FROM customers ORDER BY id LIMIT 1").fetchone()
+    repository = CustomerFactRepository(db)
+    default_payloads = [
+        {
+            "factType": "CUSTOMER_BASIC",
+            "factName": "客户类型",
+            "factContent": "客户基础类型来自客户主数据",
+            "factValue": "建设单位",
+            "sourceType": "customer",
+            "sourceId": str(customer["id"]),
+            "confidenceScore": 100,
+            "verificationStatus": "VERIFIED",
+            "createdBy": "system",
+        },
+        {
+            "factType": "PURCHASE",
+            "factName": "采购模式",
+            "factContent": "当前客户以项目采购为主",
+            "factValue": "项目采购",
+            "sourceType": "baseline",
+            "confidenceScore": 78,
+            "verificationStatus": "PENDING",
+            "createdBy": "system",
+        },
+        {
+            "factType": "STRATEGY",
+            "factName": "客户经营策略",
+            "factContent": "优先围绕重点工程项目扩大合作范围",
+            "factValue": "重点项目深耕",
+            "sourceType": "baseline",
+            "confidenceScore": 70,
+            "verificationStatus": "PENDING",
+            "createdBy": "system",
+        },
+    ]
+    if customer and not db.execute(
+        "SELECT 1 FROM customer_facts WHERE customer_id = ? LIMIT 1", (customer["id"],)
+    ).fetchone():
+        for payload in default_payloads:
+            repository.create(customer["id"], payload, now)
+
+    test_customer = db.execute(
+        "SELECT id FROM customers WHERE name = ?", ("江西头部地产集团",)
+    ).fetchone()
+    if not test_customer:
+        cursor = db.execute(
+            """INSERT INTO customers
+               (name, customer_type, industry, status, created_at, updated_at)
+               VALUES (?, '地产集团', '房地产', 'active', ?, ?)""",
+            ("江西头部地产集团", now, now),
+        )
+        test_customer_id = cursor.lastrowid
+    else:
+        test_customer_id = test_customer["id"]
+
+    for fact_type, fact_name, content in [
+        ("COMPETITOR", "当前竞品", "当前使用多乐士"),
+        ("PROJECT", "项目储备", "2027年有3个项目"),
+        ("RELATIONSHIP", "工程关系", "已认识工程负责人"),
+    ]:
+        exists = db.execute(
+            """SELECT 1 FROM customer_facts
+               WHERE customer_id = ? AND fact_type = ? AND fact_content = ?""",
+            (test_customer_id, fact_type, content),
+        ).fetchone()
+        if not exists:
+            repository.create(
+                test_customer_id,
+                {
+                    "factType": fact_type,
+                    "factName": fact_name,
+                    "factContent": content,
+                    "factValue": content,
+                    "sourceType": "manual",
+                    "confidenceScore": 90,
+                    "createdBy": "seed",
+                },
+                now,
+            )
+
 def seed_customer_profile_scoring_models(db, now):
+    existing_default = db.execute(
+        "SELECT id FROM customer_profile_scoring_models WHERE model_code = 'customer-profile' AND version_no = '2.0'"
+    ).fetchone()
+    if existing_default:
+        db.execute(
+            """UPDATE customer_profile_scoring_dimensions
+               SET config_json = ?, updated_at = ?
+               WHERE model_id = ? AND dimension_code = 'customer_risk' AND COALESCE(config_json, '') IN ('', '{}')""",
+            (json.dumps({"baseScore": 20}, ensure_ascii=False), now, existing_default["id"]),
+        )
+        db.execute(
+            """UPDATE customer_profile_scoring_dimensions
+               SET config_json = ?, updated_at = ?
+               WHERE model_id = ? AND dimension_code = 'customer_value' AND COALESCE(config_json, '') IN ('', '{}')""",
+            (json.dumps({"sourceDimensions": ["relationship_coverage", "growth_potential", "project_potential", "customer_risk"], "inverseDimensions": ["customer_risk"]}, ensure_ascii=False), now, existing_default["id"]),
+        )
+        return
     if db.execute("SELECT COUNT(*) FROM customer_profile_scoring_models").fetchone()[0]:
         return
     cur = db.execute(
@@ -2958,6 +4059,14 @@ def seed_customer_profile_scoring_models(db, now):
             (model_id, code, name, calculation_type, weight, json.dumps(fact_codes, ensure_ascii=False), json.dumps(metrics, ensure_ascii=False), order, now, now),
         )
         dimension_ids[code] = dimension_cur.lastrowid
+    db.execute(
+        "UPDATE customer_profile_scoring_dimensions SET config_json = ? WHERE id = ?",
+        (json.dumps({"baseScore": 20}, ensure_ascii=False), dimension_ids["customer_risk"]),
+    )
+    db.execute(
+        "UPDATE customer_profile_scoring_dimensions SET config_json = ? WHERE id = ?",
+        (json.dumps({"sourceDimensions": ["relationship_coverage", "growth_potential", "project_potential", "customer_risk"], "inverseDimensions": ["customer_risk"]}, ensure_ascii=False), dimension_ids["customer_value"]),
+    )
     rules = [
         ("relationship.person", "关键人覆盖", "relationship_coverage", {"metric": "personCount", "operator": ">=", "value": 1}, 25, 10, "至少识别到1位关键人。"),
         ("relationship.role", "业务角色覆盖", "relationship_coverage", {"metric": "roleCount", "operator": ">=", "value": 1}, 25, 20, "至少识别到1类业务角色。"),
@@ -3289,17 +4398,890 @@ def relationship_score_config_item(row):
         "history": float(item.pop("history_weight")),
         "duration": float(item.pop("duration_weight")),
     }
+    total = sum(weights.values())
+    if total > 1:
+        weights = {factor: value / 100 for factor, value in weights.items()}
+        total = sum(weights.values())
+    if total > 0 and abs(total - 1) > 0.000001:
+        weights = {factor: round(value / total, 6) for factor, value in weights.items()}
     item["weights"] = weights
     item["isDefault"] = bool(item.pop("is_default", 0))
     return item
 
 def get_relationship_score_config(db):
+    published = db.execute(
+        """SELECT v.version_id, v.model_id, v.version_no
+           FROM relationship_score_model_versions v
+           WHERE v.status = 'PUBLISHED'
+           ORDER BY v.published_time DESC, v.created_time DESC, v.version_id DESC
+           LIMIT 1"""
+    ).fetchone()
+    if published:
+        dimensions = db.execute(
+            """SELECT dimension_code, weight
+               FROM relationship_score_dimensions
+               WHERE version_id = ? AND enabled = 1""",
+            (published["version_id"],),
+        ).fetchall()
+        weights = {factor: 0.0 for factor in RELATIONSHIP_SCORE_FACTORS}
+        for dimension in dimensions:
+            if dimension["dimension_code"] in weights:
+                weights[dimension["dimension_code"]] = float(dimension["weight"])
+        total = sum(weights.values())
+        if total > 0:
+            weights = {factor: round(value / total, 6) for factor, value in weights.items()}
+        return {
+            "id": None,
+            "code": f"{published['model_id']}:{published['version_no']}",
+            "name": f"已发布关系评分版本 {published['version_no']}",
+            "weights": weights,
+            "status": "active",
+            "isDefault": True,
+            "description": "当前由已发布 RelationshipScoreModelVersion 提供评分维度权重。",
+            "modelId": published["model_id"],
+            "versionId": published["version_id"],
+            "versionNo": published["version_no"],
+        }
     row = db.execute(
         """SELECT * FROM relationship_score_configs
            WHERE status = 'active'
            ORDER BY is_default DESC, id DESC LIMIT 1"""
     ).fetchone()
     return relationship_score_config_item(row)
+
+def _relationship_score_model_item(row):
+    return dict(row) if row else None
+
+def _validate_relationship_score_model_payload(payload, partial=False):
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be an object")
+
+    model_id = str(payload.get("model_id", payload.get("modelId", ""))).strip()
+    model_name = str(payload.get("model_name", payload.get("modelName", ""))).strip()
+    description = str(payload.get("description", "")).strip()
+    status = str(payload.get("status", "DRAFT")).strip().upper()
+    created_by = str(payload.get("created_by", payload.get("createdBy", ""))).strip()
+
+    if not partial and not model_id:
+        raise ValueError("model_id is required")
+    if "model_name" in payload or "modelName" in payload or not partial:
+        if not model_name:
+            raise ValueError("model_name is required")
+    if "created_by" in payload or "createdBy" in payload or not partial:
+        if not created_by:
+            raise ValueError("created_by is required")
+    if "status" in payload and status not in RELATIONSHIP_SCORE_MODEL_STATUSES:
+        raise ValueError("status must be one of DRAFT, TESTING, PUBLISHED, DISABLED")
+
+    return {
+        "model_id": model_id,
+        "model_name": model_name,
+        "description": description,
+        "status": status,
+        "created_by": created_by,
+    }
+
+def list_relationship_score_models(db, status=None):
+    clauses = []
+    values = []
+    if status:
+        normalized_status = str(status).strip().upper()
+        if normalized_status not in RELATIONSHIP_SCORE_MODEL_STATUSES:
+            raise ValueError("status must be one of DRAFT, TESTING, PUBLISHED, DISABLED")
+        clauses.append("status = ?")
+        values.append(normalized_status)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = db.execute(
+        f"""SELECT model_id, model_name, description, status, created_by,
+                   created_time, updated_time
+            FROM relationship_score_models
+            {where}
+            ORDER BY updated_time DESC, model_id DESC""",
+        tuple(values),
+    ).fetchall()
+    return [_relationship_score_model_item(row) for row in rows]
+
+def get_relationship_score_model(db, model_id):
+    row = db.execute(
+        """SELECT model_id, model_name, description, status, created_by,
+                  created_time, updated_time
+           FROM relationship_score_models
+           WHERE model_id = ?""",
+        (str(model_id).strip(),),
+    ).fetchone()
+    return _relationship_score_model_item(row)
+
+def create_relationship_score_model(db, payload, now=None):
+    values = _validate_relationship_score_model_payload(payload)
+    now = now or datetime.now(timezone.utc).isoformat()
+    try:
+        db.execute(
+            """INSERT INTO relationship_score_models
+               (model_id, model_name, description, status, created_by, created_time, updated_time)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                values["model_id"],
+                values["model_name"],
+                values["description"],
+                values["status"],
+                values["created_by"],
+                now,
+                now,
+            ),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("model_id already exists") from exc
+    return get_relationship_score_model(db, values["model_id"])
+
+def update_relationship_score_model(db, model_id, payload, now=None):
+    values = _validate_relationship_score_model_payload(payload, partial=True)
+    existing = get_relationship_score_model(db, model_id)
+    if not existing:
+        raise LookupError("relationship score model not found")
+    if values["model_id"] and values["model_id"] != str(model_id).strip():
+        raise ValueError("model_id cannot be changed")
+
+    fields = []
+    params = []
+    for key in ("model_name", "description", "status"):
+        if key in payload or key == "model_name" and "modelName" in payload:
+            fields.append(f"{key} = ?")
+            params.append(values[key])
+    if "created_by" in payload or "createdBy" in payload:
+        fields.append("created_by = ?")
+        params.append(values["created_by"])
+    if not fields:
+        raise ValueError("at least one editable field is required")
+
+    now = now or datetime.now(timezone.utc).isoformat()
+    fields.append("updated_time = ?")
+    params.extend([now, str(model_id).strip()])
+    db.execute(
+        f"UPDATE relationship_score_models SET {', '.join(fields)} WHERE model_id = ?",
+        tuple(params),
+    )
+    return get_relationship_score_model(db, model_id)
+
+def _relationship_score_model_version_item(row):
+    return dict(row) if row else None
+
+def _validate_relationship_score_model_version_payload(payload, partial=False):
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be an object")
+
+    version_id = str(payload.get("version_id", payload.get("versionId", ""))).strip()
+    model_id = str(payload.get("model_id", payload.get("modelId", ""))).strip()
+    version_no = str(payload.get("version_no", payload.get("versionNo", ""))).strip()
+    status = str(payload.get("status", "DRAFT")).strip().upper()
+    created_by = str(payload.get("created_by", payload.get("createdBy", ""))).strip()
+
+    if not partial and not version_id:
+        raise ValueError("version_id is required")
+    if not partial and not model_id:
+        raise ValueError("model_id is required")
+    if not partial and not version_no:
+        raise ValueError("version_no is required")
+    if ("version_no" in payload or "versionNo" in payload or not partial) and not version_no:
+        raise ValueError("version_no is required")
+    if ("created_by" in payload or "createdBy" in payload or not partial) and not created_by:
+        raise ValueError("created_by is required")
+    if "status" in payload and status not in RELATIONSHIP_SCORE_MODEL_VERSION_STATUSES:
+        raise ValueError("status must be one of DRAFT, TESTING, PUBLISHED, DISABLED")
+    if status == "PUBLISHED" and "status" in payload:
+        raise ValueError("published versions must be published through the publish API")
+
+    return {
+        "version_id": version_id,
+        "model_id": model_id,
+        "version_no": version_no,
+        "status": status,
+        "created_by": created_by,
+    }
+
+def list_relationship_score_model_versions(db, model_id, status=None):
+    if not get_relationship_score_model(db, model_id):
+        raise LookupError("relationship score model not found")
+    clauses = ["model_id = ?"]
+    values = [str(model_id).strip()]
+    if status:
+        normalized_status = str(status).strip().upper()
+        if normalized_status not in RELATIONSHIP_SCORE_MODEL_VERSION_STATUSES:
+            raise ValueError("status must be one of DRAFT, TESTING, PUBLISHED, DISABLED")
+        clauses.append("status = ?")
+        values.append(normalized_status)
+    rows = db.execute(
+        f"""SELECT version_id, model_id, version_no, status, created_by,
+                   created_time, published_time
+            FROM relationship_score_model_versions
+            WHERE {' AND '.join(clauses)}
+            ORDER BY version_no DESC, created_time DESC, version_id DESC""",
+        tuple(values),
+    ).fetchall()
+    return [_relationship_score_model_version_item(row) for row in rows]
+
+def get_relationship_score_model_version(db, model_id, version_id):
+    row = db.execute(
+        """SELECT version_id, model_id, version_no, status, created_by,
+                  created_time, published_time
+           FROM relationship_score_model_versions
+           WHERE model_id = ? AND version_id = ?""",
+        (str(model_id).strip(), str(version_id).strip()),
+    ).fetchone()
+    return _relationship_score_model_version_item(row)
+
+def create_relationship_score_model_version(db, model_id, payload, now=None):
+    if not get_relationship_score_model(db, model_id):
+        raise LookupError("relationship score model not found")
+    values = _validate_relationship_score_model_version_payload(payload)
+    if values["model_id"] != str(model_id).strip():
+        raise ValueError("model_id does not match the parent model")
+    if values["status"] == "PUBLISHED":
+        raise ValueError("new versions must be published through the publish API")
+    now = now or datetime.now(timezone.utc).isoformat()
+    try:
+        db.execute(
+            """INSERT INTO relationship_score_model_versions
+               (version_id, model_id, version_no, status, created_by, created_time)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                values["version_id"],
+                values["model_id"],
+                values["version_no"],
+                values["status"],
+                values["created_by"],
+                now,
+            ),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("version_id or version_no already exists") from exc
+    seed_default_relationship_score_dimensions(db, values["version_id"])
+    return get_relationship_score_model_version(db, model_id, values["version_id"])
+
+def update_relationship_score_model_version(db, model_id, version_id, payload, now=None):
+    existing = get_relationship_score_model_version(db, model_id, version_id)
+    if not existing:
+        raise LookupError("relationship score model version not found")
+    if existing["status"] == "PUBLISHED":
+        raise ValueError("published versions cannot be modified; create a new version")
+    values = _validate_relationship_score_model_version_payload(payload, partial=True)
+    if values["version_id"] and values["version_id"] != str(version_id).strip():
+        raise ValueError("version_id cannot be changed")
+    if values["model_id"] and values["model_id"] != str(model_id).strip():
+        raise ValueError("model_id cannot be changed")
+
+    fields = []
+    params = []
+    if "version_no" in payload or "versionNo" in payload:
+        fields.append("version_no = ?")
+        params.append(values["version_no"])
+    if "status" in payload:
+        fields.append("status = ?")
+        params.append(values["status"])
+    if "created_by" in payload or "createdBy" in payload:
+        fields.append("created_by = ?")
+        params.append(values["created_by"])
+    if not fields:
+        raise ValueError("at least one editable field is required")
+
+    now = now or datetime.now(timezone.utc).isoformat()
+    params.append(str(model_id).strip())
+    params.append(str(version_id).strip())
+    try:
+        db.execute(
+            f"""UPDATE relationship_score_model_versions
+                SET {', '.join(fields)}
+                WHERE model_id = ? AND version_id = ?""",
+            tuple(params),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("version_no already exists") from exc
+    return get_relationship_score_model_version(db, model_id, version_id)
+
+def publish_relationship_score_model_version(db, model_id, version_id, now=None):
+    existing = get_relationship_score_model_version(db, model_id, version_id)
+    if not existing:
+        raise LookupError("relationship score model version not found")
+    if existing["status"] == "PUBLISHED":
+        return existing
+    validation = validate_relationship_score_model_version(db, model_id, version_id)
+    if not validation["valid"]:
+        raise ValueError(json.dumps(validation, ensure_ascii=False))
+
+    now = now or datetime.now(timezone.utc).isoformat()
+    db.execute(
+        """UPDATE relationship_score_model_versions
+           SET status = 'DISABLED'
+           WHERE model_id = ? AND status = 'PUBLISHED' AND version_id <> ?""",
+        (str(model_id).strip(), str(version_id).strip()),
+    )
+    db.execute(
+        """UPDATE relationship_score_model_versions
+           SET status = 'PUBLISHED', published_time = ?
+           WHERE model_id = ? AND version_id = ?""",
+        (now, str(model_id).strip(), str(version_id).strip()),
+    )
+    db.execute(
+        """UPDATE relationship_score_models
+           SET status = 'PUBLISHED', updated_time = ?
+           WHERE model_id = ?""",
+        (now, str(model_id).strip()),
+    )
+    return get_relationship_score_model_version(db, model_id, version_id)
+
+def _relationship_score_dimension_item(row):
+    if not row:
+        return None
+    item = dict(row)
+    item["enabled"] = bool(item["enabled"])
+    return item
+
+def _validate_relationship_score_dimension_payload(payload, partial=False):
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be an object")
+    dimension_id = str(payload.get("dimension_id", payload.get("dimensionId", ""))).strip()
+    version_id = str(payload.get("version_id", payload.get("versionId", ""))).strip()
+    dimension_code = str(payload.get("dimension_code", payload.get("dimensionCode", ""))).strip()
+    dimension_name = str(payload.get("dimension_name", payload.get("dimensionName", ""))).strip()
+    description = str(payload.get("description", "")).strip()
+    try:
+        weight = float(payload.get("weight", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("weight must be numeric") from exc
+    if not partial and not dimension_id:
+        raise ValueError("dimension_id is required")
+    if not partial and not version_id:
+        raise ValueError("version_id is required")
+    if not partial and not dimension_code:
+        raise ValueError("dimension_code is required")
+    if not partial and not dimension_name:
+        raise ValueError("dimension_name is required")
+    if "dimension_code" in payload or "dimensionCode" in payload or not partial:
+        if not dimension_code:
+            raise ValueError("dimension_code is required")
+    if "dimension_name" in payload or "dimensionName" in payload or not partial:
+        if not dimension_name:
+            raise ValueError("dimension_name is required")
+    if "weight" in payload and weight < 0:
+        raise ValueError("weight must be non-negative")
+    if "enabled" in payload and not isinstance(payload["enabled"], (bool, int)):
+        raise ValueError("enabled must be boolean")
+    return {
+        "dimension_id": dimension_id,
+        "version_id": version_id,
+        "dimension_code": dimension_code,
+        "dimension_name": dimension_name,
+        "weight": weight,
+        "enabled": int(bool(payload.get("enabled", True))),
+        "description": description,
+    }
+
+def _relationship_score_model_version_for_dimension(db, version_id):
+    row = db.execute(
+        "SELECT version_id, status FROM relationship_score_model_versions WHERE version_id = ?",
+        (str(version_id).strip(),),
+    ).fetchone()
+    if not row:
+        raise LookupError("relationship score model version not found")
+    return row
+
+def _ensure_dimension_parent_model(db, model_id, version_id):
+    if not get_relationship_score_model_version(db, model_id, version_id):
+        raise LookupError("relationship score model version not found")
+
+def _ensure_dimension_version_editable(db, version_id):
+    version = _relationship_score_model_version_for_dimension(db, version_id)
+    if version["status"] == "PUBLISHED":
+        raise ValueError("published versions cannot modify dimensions; create a new version")
+    return version
+
+def list_relationship_score_dimensions(db, version_id):
+    _relationship_score_model_version_for_dimension(db, version_id)
+    rows = db.execute(
+        """SELECT dimension_id, version_id, dimension_code, dimension_name,
+                  weight, enabled, description
+           FROM relationship_score_dimensions
+           WHERE version_id = ?
+           ORDER BY dimension_code, dimension_id""",
+        (str(version_id).strip(),),
+    ).fetchall()
+    return [_relationship_score_dimension_item(row) for row in rows]
+
+def get_relationship_score_dimension(db, version_id, dimension_id):
+    row = db.execute(
+        """SELECT dimension_id, version_id, dimension_code, dimension_name,
+                  weight, enabled, description
+           FROM relationship_score_dimensions
+           WHERE version_id = ? AND dimension_id = ?""",
+        (str(version_id).strip(), str(dimension_id).strip()),
+    ).fetchone()
+    return _relationship_score_dimension_item(row)
+
+def create_relationship_score_dimension(db, version_id, payload):
+    _ensure_dimension_version_editable(db, version_id)
+    values = _validate_relationship_score_dimension_payload(payload)
+    if values["version_id"] != str(version_id).strip():
+        raise ValueError("version_id does not match the parent version")
+    try:
+        db.execute(
+            """INSERT INTO relationship_score_dimensions
+               (dimension_id, version_id, dimension_code, dimension_name,
+                weight, enabled, description)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                values["dimension_id"],
+                values["version_id"],
+                values["dimension_code"],
+                values["dimension_name"],
+                values["weight"],
+                values["enabled"],
+                values["description"],
+            ),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("dimension_id or dimension_code already exists") from exc
+    return get_relationship_score_dimension(db, version_id, values["dimension_id"])
+
+def update_relationship_score_dimension(db, version_id, dimension_id, payload):
+    _ensure_dimension_version_editable(db, version_id)
+    existing = get_relationship_score_dimension(db, version_id, dimension_id)
+    if not existing:
+        raise LookupError("relationship score dimension not found")
+    values = _validate_relationship_score_dimension_payload(payload, partial=True)
+    if values["dimension_id"] and values["dimension_id"] != str(dimension_id).strip():
+        raise ValueError("dimension_id cannot be changed")
+    if values["version_id"] and values["version_id"] != str(version_id).strip():
+        raise ValueError("version_id cannot be changed")
+
+    fields = []
+    params = []
+    aliases = {
+        "dimension_code": ("dimension_code", "dimensionCode"),
+        "dimension_name": ("dimension_name", "dimensionName"),
+        "weight": ("weight",),
+        "enabled": ("enabled",),
+        "description": ("description",),
+    }
+    for field, keys in aliases.items():
+        if any(key in payload for key in keys):
+            fields.append(f"{field} = ?")
+            params.append(values[field])
+    if not fields:
+        raise ValueError("at least one editable field is required")
+    params.extend([str(version_id).strip(), str(dimension_id).strip()])
+    try:
+        db.execute(
+            f"""UPDATE relationship_score_dimensions
+                SET {', '.join(fields)}
+                WHERE version_id = ? AND dimension_id = ?""",
+            tuple(params),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("dimension_code already exists") from exc
+    return get_relationship_score_dimension(db, version_id, dimension_id)
+
+def delete_relationship_score_dimension(db, version_id, dimension_id):
+    _ensure_dimension_version_editable(db, version_id)
+    cur = db.execute(
+        """DELETE FROM relationship_score_dimensions
+           WHERE version_id = ? AND dimension_id = ?""",
+        (str(version_id).strip(), str(dimension_id).strip()),
+    )
+    if not cur.rowcount:
+        raise LookupError("relationship score dimension not found")
+    return {
+        "status": "deleted",
+        "version_id": str(version_id).strip(),
+        "dimension_id": str(dimension_id).strip(),
+    }
+
+def seed_default_relationship_score_dimensions(db, version_id):
+    for code, name, weight, description in DEFAULT_RELATIONSHIP_SCORE_DIMENSIONS:
+        dimension_id = f"{version_id}-{code}"
+        db.execute(
+            """INSERT OR IGNORE INTO relationship_score_dimensions
+               (dimension_id, version_id, dimension_code, dimension_name,
+                weight, enabled, description)
+               VALUES (?, ?, ?, ?, ?, 1, ?)""",
+            (dimension_id, version_id, code, name, weight, description),
+        )
+
+def _relationship_score_rule_item(row):
+    if not row:
+        return None
+    item = dict(row)
+    item["condition"] = _json_value(item.pop("condition_json"), {})
+    item["enabled"] = bool(item["enabled"])
+    return item
+
+def _validate_relationship_score_rule_condition(rule_type, condition):
+    if not isinstance(condition, dict):
+        raise ValueError("condition must be an object")
+    rule_type = str(rule_type).strip().upper()
+    if rule_type not in RELATIONSHIP_SCORE_RULE_TYPES:
+        raise ValueError("rule_type must be one of RANGE, TIME, ENUM")
+
+    field = str(condition.get("field", "")).strip()
+    if not field:
+        raise ValueError("condition.field is required")
+
+    if rule_type == "RANGE":
+        operator = str(condition.get("operator", "")).strip()
+        if operator not in {">", ">=", "<", "<=", "=", "==", "!="}:
+            raise ValueError("RANGE condition.operator is invalid")
+        if "value" not in condition:
+            raise ValueError("RANGE condition.value is required")
+        try:
+            float(condition["value"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("RANGE condition.value must be numeric") from exc
+    elif rule_type == "TIME":
+        if "withinDays" not in condition:
+            raise ValueError("TIME condition.withinDays is required")
+        try:
+            within_days = int(condition["withinDays"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("TIME condition.withinDays must be an integer") from exc
+        if within_days < 0:
+            raise ValueError("TIME condition.withinDays must be non-negative")
+    elif rule_type == "ENUM":
+        operator = str(condition.get("operator", "=")).strip()
+        if operator not in {"=", "==", "in", "contains"}:
+            raise ValueError("ENUM condition.operator is invalid")
+        if "value" not in condition:
+            raise ValueError("ENUM condition.value is required")
+        if operator == "in" and not isinstance(condition["value"], list):
+            raise ValueError("ENUM condition.value must be an array for operator in")
+    return condition
+
+def _validate_relationship_score_rule_payload(payload, partial=False):
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be an object")
+    rule_id = str(payload.get("rule_id", payload.get("ruleId", ""))).strip()
+    dimension_id = str(payload.get("dimension_id", payload.get("dimensionId", ""))).strip()
+    rule_type = str(payload.get("rule_type", payload.get("ruleType", ""))).strip().upper()
+    condition = payload.get("condition")
+    try:
+        score = float(payload.get("score", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("score must be numeric") from exc
+    try:
+        priority = int(payload.get("priority", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("priority must be an integer") from exc
+
+    if not partial and not rule_id:
+        raise ValueError("rule_id is required")
+    if not partial and not dimension_id:
+        raise ValueError("dimension_id is required")
+    if not partial and not rule_type:
+        raise ValueError("rule_type is required")
+    if not partial and condition is None:
+        raise ValueError("condition is required")
+    if "rule_type" in payload or "ruleType" in payload or not partial:
+        if rule_type not in RELATIONSHIP_SCORE_RULE_TYPES:
+            raise ValueError("rule_type must be one of RANGE, TIME, ENUM")
+    if "condition" in payload:
+        _validate_relationship_score_rule_condition(rule_type, condition)
+    if "score" in payload and not isinstance(payload["score"], (int, float, str)):
+        raise ValueError("score must be numeric")
+    if "priority" in payload and priority < 0:
+        raise ValueError("priority must be non-negative")
+    if "enabled" in payload and not isinstance(payload["enabled"], (bool, int)):
+        raise ValueError("enabled must be boolean")
+    return {
+        "rule_id": rule_id,
+        "dimension_id": dimension_id,
+        "rule_type": rule_type,
+        "condition": condition,
+        "score": score,
+        "priority": priority,
+        "enabled": int(bool(payload.get("enabled", True))),
+    }
+
+def _ensure_rule_dimension_editable(db, dimension_id):
+    row = _relationship_score_rule_dimension(db, dimension_id)
+    if row["status"] == "PUBLISHED":
+        raise ValueError("published versions cannot modify rules; create a new version")
+    return row
+
+def _relationship_score_rule_dimension(db, dimension_id):
+    row = db.execute(
+        """SELECT d.dimension_id, v.status
+           FROM relationship_score_dimensions d
+           JOIN relationship_score_model_versions v ON v.version_id = d.version_id
+           WHERE d.dimension_id = ?""",
+        (str(dimension_id).strip(),),
+    ).fetchone()
+    if not row:
+        raise LookupError("relationship score dimension not found")
+    return row
+
+def list_relationship_score_rules(db, dimension_id):
+    _relationship_score_rule_dimension(db, dimension_id)
+    rows = db.execute(
+        """SELECT rule_id, dimension_id, rule_type, condition_json,
+                  score, priority, enabled
+           FROM relationship_score_rules
+           WHERE dimension_id = ?
+           ORDER BY priority, rule_id""",
+        (str(dimension_id).strip(),),
+    ).fetchall()
+    return [_relationship_score_rule_item(row) for row in rows]
+
+def get_relationship_score_rule(db, dimension_id, rule_id):
+    _relationship_score_rule_dimension(db, dimension_id)
+    row = db.execute(
+        """SELECT rule_id, dimension_id, rule_type, condition_json,
+                  score, priority, enabled
+           FROM relationship_score_rules
+           WHERE dimension_id = ? AND rule_id = ?""",
+        (str(dimension_id).strip(), str(rule_id).strip()),
+    ).fetchone()
+    return _relationship_score_rule_item(row)
+
+def create_relationship_score_rule(db, dimension_id, payload):
+    _ensure_rule_dimension_editable(db, dimension_id)
+    values = _validate_relationship_score_rule_payload(payload)
+    if values["dimension_id"] != str(dimension_id).strip():
+        raise ValueError("dimension_id does not match the parent dimension")
+    try:
+        db.execute(
+            """INSERT INTO relationship_score_rules
+               (rule_id, dimension_id, rule_type, condition_json,
+                score, priority, enabled)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                values["rule_id"],
+                values["dimension_id"],
+                values["rule_type"],
+                json.dumps(values["condition"], ensure_ascii=False),
+                values["score"],
+                values["priority"],
+                values["enabled"],
+            ),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("rule_id already exists") from exc
+    return get_relationship_score_rule(db, dimension_id, values["rule_id"])
+
+def update_relationship_score_rule(db, dimension_id, rule_id, payload):
+    _ensure_rule_dimension_editable(db, dimension_id)
+    existing = get_relationship_score_rule(db, dimension_id, rule_id)
+    if not existing:
+        raise LookupError("relationship score rule not found")
+    validation_payload = dict(payload)
+    if "condition" in validation_payload and "rule_type" not in validation_payload and "ruleType" not in validation_payload:
+        validation_payload["rule_type"] = existing["rule_type"]
+    values = _validate_relationship_score_rule_payload(validation_payload, partial=True)
+    if values["rule_id"] and values["rule_id"] != str(rule_id).strip():
+        raise ValueError("rule_id cannot be changed")
+    if values["dimension_id"] and values["dimension_id"] != str(dimension_id).strip():
+        raise ValueError("dimension_id cannot be changed")
+
+    fields = []
+    params = []
+    if "rule_type" in payload or "ruleType" in payload:
+        fields.append("rule_type = ?")
+        params.append(values["rule_type"])
+    if "condition" in payload:
+        fields.append("condition_json = ?")
+        params.append(json.dumps(values["condition"], ensure_ascii=False))
+    if "score" in payload:
+        fields.append("score = ?")
+        params.append(values["score"])
+    if "priority" in payload:
+        fields.append("priority = ?")
+        params.append(values["priority"])
+    if "enabled" in payload:
+        fields.append("enabled = ?")
+        params.append(values["enabled"])
+    if not fields:
+        raise ValueError("at least one editable field is required")
+    params.extend([str(dimension_id).strip(), str(rule_id).strip()])
+    db.execute(
+        f"""UPDATE relationship_score_rules
+            SET {', '.join(fields)}
+            WHERE dimension_id = ? AND rule_id = ?""",
+        tuple(params),
+    )
+    return get_relationship_score_rule(db, dimension_id, rule_id)
+
+def reorder_relationship_score_rules(db, dimension_id, rule_ids):
+    _ensure_rule_dimension_editable(db, dimension_id)
+    if not isinstance(rule_ids, list) or not rule_ids:
+        raise ValueError("ruleIds must be a non-empty array")
+    normalized = [str(rule_id).strip() for rule_id in rule_ids]
+    if len(normalized) != len(set(normalized)):
+        raise ValueError("ruleIds must not contain duplicates")
+    rows = db.execute(
+        "SELECT rule_id FROM relationship_score_rules WHERE dimension_id = ?",
+        (str(dimension_id).strip(),),
+    ).fetchall()
+    existing_ids = {row["rule_id"] for row in rows}
+    if set(normalized) != existing_ids:
+        raise ValueError("ruleIds must contain every rule in the dimension exactly once")
+    for priority, rule_id in enumerate(normalized):
+        db.execute(
+            "UPDATE relationship_score_rules SET priority = ? WHERE dimension_id = ? AND rule_id = ?",
+            (priority, str(dimension_id).strip(), rule_id),
+        )
+    return list_relationship_score_rules(db, dimension_id)
+
+def delete_relationship_score_rule(db, dimension_id, rule_id):
+    _ensure_rule_dimension_editable(db, dimension_id)
+    cur = db.execute(
+        "DELETE FROM relationship_score_rules WHERE dimension_id = ? AND rule_id = ?",
+        (str(dimension_id).strip(), str(rule_id).strip()),
+    )
+    if not cur.rowcount:
+        raise LookupError("relationship score rule not found")
+    return {"status": "deleted", "dimension_id": str(dimension_id).strip(), "rule_id": str(rule_id).strip()}
+
+def evaluate_relationship_score_rule(rule, context, now=None):
+    """解析并执行单条规则，返回是否命中。"""
+    rule_type = str(rule["rule_type"]).upper()
+    condition = rule["condition"] if isinstance(rule.get("condition"), dict) else _json_value(rule.get("condition_json"), {})
+    _validate_relationship_score_rule_condition(rule_type, condition)
+    context = context or {}
+    actual = context.get(condition["field"])
+    if rule_type == "RANGE":
+        expected = float(condition["value"])
+        actual = float(actual)
+        return {
+            ">": actual > expected, ">=": actual >= expected, "<": actual < expected,
+            "<=": actual <= expected, "=": actual == expected, "==": actual == expected,
+            "!=": actual != expected,
+        }[condition["operator"]]
+    if rule_type == "ENUM":
+        operator = condition.get("operator", "=")
+        expected = condition["value"]
+        return (
+            actual in expected if operator == "in"
+            else expected in actual if operator == "contains" and isinstance(actual, (list, str))
+            else actual == expected
+        )
+    if not actual:
+        return False
+    parsed = _parse_relationship_score_time(actual)
+    now_dt = _parse_relationship_score_time(now) or datetime.now(timezone.utc)
+    return parsed is not None and 0 <= (now_dt - parsed).total_seconds() <= int(condition["withinDays"]) * 86400
+
+def _rules_conflict(left, right):
+    left_condition = left["condition"]
+    right_condition = right["condition"]
+    if left_condition.get("field") != right_condition.get("field"):
+        return False
+    if left["rule_type"] != right["rule_type"]:
+        return True
+    if left["rule_type"] == "RANGE":
+        left_value = float(left_condition["value"])
+        right_value = float(right_condition["value"])
+        left_operator = left_condition["operator"]
+        right_operator = right_condition["operator"]
+        if left_operator in {"=", "=="}:
+            return evaluate_relationship_score_rule(right, {left_condition["field"]: left_value})
+        if right_operator in {"=", "=="}:
+            return evaluate_relationship_score_rule(left, {left_condition["field"]: right_value})
+        if left_operator in {">", ">="} and right_operator in {">", ">="}:
+            return True
+        if left_operator in {"<", "<="} and right_operator in {"<", "<="}:
+            return True
+        return False
+    if left["rule_type"] == "TIME":
+        return True
+    left_value = left_condition["value"]
+    right_value = right_condition["value"]
+    left_values = set(left_value if isinstance(left_value, list) else [left_value])
+    right_values = set(right_value if isinstance(right_value, list) else [right_value])
+    return bool(left_values & right_values)
+
+def validate_relationship_score_model_version(db, model_id, version_id):
+    version = get_relationship_score_model_version(db, model_id, version_id)
+    errors = []
+    if not version:
+        raise LookupError("relationship score model version not found")
+    if version["status"] != "TESTING":
+        errors.append({
+            "code": "INVALID_STATUS",
+            "message": "只有 TESTING 状态的版本可以发布。",
+            "status": version["status"],
+        })
+
+    dimensions = db.execute(
+        """SELECT dimension_id, dimension_code, dimension_name, weight, enabled
+           FROM relationship_score_dimensions
+           WHERE version_id = ?
+           ORDER BY dimension_code, dimension_id""",
+        (version_id,),
+    ).fetchall()
+    enabled_dimensions = [row for row in dimensions if row["enabled"]]
+    if not enabled_dimensions:
+        errors.append({
+            "code": "NO_ENABLED_DIMENSION",
+            "message": "至少需要一个启用的评分维度。",
+        })
+    total_weight = sum(float(row["weight"] or 0) for row in enabled_dimensions)
+    if enabled_dimensions and abs(total_weight - 1.0) > 0.000001:
+        errors.append({
+            "code": "INVALID_WEIGHT_SUM",
+            "message": f"启用维度权重总和必须等于100%，当前为{round(total_weight * 100, 4)}%。",
+            "actual": total_weight,
+            "expected": 1.0,
+        })
+
+    for dimension in enabled_dimensions:
+        rule_rows = db.execute(
+            """SELECT rule_id, rule_type, condition_json, score, priority, enabled
+               FROM relationship_score_rules
+               WHERE dimension_id = ? AND enabled = 1
+               ORDER BY priority, rule_id""",
+            (dimension["dimension_id"],),
+        ).fetchall()
+        if not rule_rows:
+            errors.append({
+                "code": "NO_ENABLED_RULE",
+                "message": f"维度“{dimension['dimension_name']}”至少需要一条启用规则。",
+                "dimensionId": dimension["dimension_id"],
+            })
+            continue
+        parsed_rules = []
+        for row in rule_rows:
+            try:
+                condition = _json_value(row["condition_json"], {})
+                _validate_relationship_score_rule_condition(row["rule_type"], condition)
+                parsed_rules.append({
+                    "rule_id": row["rule_id"],
+                    "rule_type": row["rule_type"],
+                    "condition": condition,
+                })
+            except ValueError as exc:
+                errors.append({
+                    "code": "INVALID_RULE",
+                    "message": f"规则“{row['rule_id']}”无效：{exc}",
+                    "dimensionId": dimension["dimension_id"],
+                    "ruleId": row["rule_id"],
+                })
+        for index, left in enumerate(parsed_rules):
+            for right in parsed_rules[index + 1:]:
+                if _rules_conflict(left, right):
+                    errors.append({
+                        "code": "CONFLICTING_RULES",
+                        "message": f"规则“{left['rule_id']}”与“{right['rule_id']}”条件冲突。",
+                        "dimensionId": dimension["dimension_id"],
+                        "ruleIds": [left["rule_id"], right["rule_id"]],
+                    })
+    return {
+        "valid": not errors,
+        "modelId": model_id,
+        "versionId": version_id,
+        "versionNo": version["version_no"],
+        "errors": errors,
+        "summary": {
+            "dimensionCount": len(dimensions),
+            "enabledDimensionCount": len(enabled_dimensions),
+            "enabledWeight": total_weight,
+        },
+    }
 
 def normalize_relationship_score_weights(payload):
     raw = payload.get("weights") if isinstance(payload.get("weights"), dict) else payload
@@ -3331,6 +5313,108 @@ def normalize_relationship_score_weights(payload):
         raise ValueError("weights must sum to a positive value")
     return {factor: round(value / total, 6) for factor, value in values.items()}
 
+def _parse_relationship_score_time(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+def calculate_interaction_frequency_score(events, interaction_count=0, now=None):
+    """根据最近 90 天关系事件数量计算互动频率分。"""
+    now_dt = _parse_relationship_score_time(now) or datetime.now(timezone.utc)
+    valid_times = [
+        _parse_relationship_score_time(event["event_time"])
+        for event in events or []
+    ]
+    recent_count = sum(
+        1 for event_time in valid_times
+        if event_time and 0 <= (now_dt - event_time).days <= 90
+    )
+    if not recent_count:
+        recent_count = min(max(int(interaction_count or 0), 0), 5)
+    return min(100, recent_count * 20)
+
+def calculate_recency_score(last_contact_at=None, events=None, now=None):
+    """根据最近一次联系时间计算新鲜度分。"""
+    now_dt = _parse_relationship_score_time(now) or datetime.now(timezone.utc)
+    contact_times = [
+        event_time
+        for event_time in (
+            _parse_relationship_score_time(event["event_time"])
+            for event in events or []
+        )
+        if event_time
+    ]
+    last_contact = _parse_relationship_score_time(last_contact_at)
+    if last_contact:
+        contact_times.append(last_contact)
+    if not contact_times:
+        return 0
+    age_days = max(0, (now_dt - max(contact_times)).days)
+    return (
+        100 if age_days <= 7
+        else 85 if age_days <= 14
+        else 70 if age_days <= 30
+        else 45 if age_days <= 60
+        else 25 if age_days <= 90
+        else 10
+    )
+
+def calculate_influence_score(db, relationship):
+    """根据职位影响力和关系类型计算影响力分。"""
+    score = int(relationship["default_weight"] or 50)
+    if relationship["source_entity_type"] != "Person":
+        return max(0, min(100, score))
+
+    influence_level = None
+    if relationship["target_entity_type"] == "Opportunity":
+        row = db.execute(
+            """SELECT influence_level FROM opportunity_persons
+               WHERE opportunity_id = ? AND person_id = ?
+               ORDER BY updated_at DESC LIMIT 1""",
+            (relationship["target_entity_ref_id"], relationship["source_entity_ref_id"]),
+        ).fetchone()
+        influence_level = row["influence_level"] if row else None
+    score = {"高": 100, "中": 70, "低": 40, "未知": 25}.get(influence_level, score)
+    if not influence_level and "决策" in str(relationship["relationship_type_name"]):
+        score = max(score, 90)
+    return max(0, min(100, score))
+
+def calculate_history_score(events):
+    """根据历史关系事件数量和正向影响计算历史合作分。"""
+    event_rows = list(events or [])
+    positive_impact_score = min(
+        30,
+        max(
+            0,
+            sum(
+                int(event["impact_score"] or 0)
+                for event in event_rows
+                if _parse_relationship_score_time(event["event_time"])
+            ) * 3,
+        ),
+    )
+    return min(100, min(70, len(event_rows) * 10) + positive_impact_score)
+
+def calculate_duration_score(first_established_at=None, now=None):
+    """根据关系建立时长计算持续时间分。"""
+    now_dt = _parse_relationship_score_time(now) or datetime.now(timezone.utc)
+    first_established = _parse_relationship_score_time(first_established_at)
+    if not first_established:
+        return 0
+    duration_days = max(0, (now_dt - first_established).days)
+    return (
+        100 if duration_days >= 730
+        else 85 if duration_days >= 365
+        else 70 if duration_days >= 180
+        else 45 if duration_days >= 90
+        else 20 if duration_days >= 30
+        else 0
+    )
+
 def calculate_relationship_strength_auto(db, relationship_id, now=None):
     """按五项可配置因素自动计算关系强度，并保存完整评分明细。"""
     now = now or datetime.now(timezone.utc).isoformat()
@@ -3348,60 +5432,22 @@ def calculate_relationship_strength_auto(db, relationship_id, now=None):
     if not relationship:
         raise LookupError("relationship not found")
 
-    def parse_time(value):
-        if not value:
-            return None
-        try:
-            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
-        except ValueError:
-            return None
-
-    now_dt = parse_time(now) or datetime.now(timezone.utc)
+    now_dt = _parse_relationship_score_time(now) or datetime.now(timezone.utc)
     events = db.execute(
         "SELECT event_time, impact_score FROM relationship_events WHERE relationship_id = ? ORDER BY event_time DESC, id DESC",
         (relationship_id,),
     ).fetchall()
-    event_times = [(parse_time(event["event_time"]), int(event["impact_score"] or 0)) for event in events]
-    valid_times = [(event_time, impact) for event_time, impact in event_times if event_time]
-    recent_count = sum(1 for event_time, _ in valid_times if 0 <= (now_dt - event_time).days <= 90)
-    if not recent_count:
-        recent_count = min(int(relationship["interaction_count"] or 0), 5)
-    interaction_frequency_score = min(100, recent_count * 20)
-
-    last_contact = parse_time(relationship["last_contact_at"])
-    if valid_times:
-        contact_times = [event_time for event_time, _ in valid_times]
-        if last_contact:
-            contact_times.append(last_contact)
-        last_contact = max(contact_times)
-    if not last_contact:
-        recency_score = 0
-    else:
-        age_days = max(0, (now_dt - last_contact).days)
-        recency_score = 100 if age_days <= 7 else 85 if age_days <= 14 else 70 if age_days <= 30 else 45 if age_days <= 60 else 25 if age_days <= 90 else 10
-
-    influence_score = int(relationship["default_weight"] or 50)
-    if relationship["source_entity_type"] == "Person":
-        influence_level = None
-        if relationship["target_entity_type"] == "Opportunity":
-            row = db.execute(
-                """SELECT influence_level FROM opportunity_persons
-                   WHERE opportunity_id = ? AND person_id = ?
-                   ORDER BY updated_at DESC LIMIT 1""",
-                (relationship["target_entity_ref_id"], relationship["source_entity_ref_id"]),
-            ).fetchone()
-            influence_level = row["influence_level"] if row else None
-        influence_score = {"高": 100, "中": 70, "低": 40, "未知": 25}.get(influence_level, influence_score)
-        if not influence_level and "决策" in str(relationship["relationship_type_name"]):
-            influence_score = max(influence_score, 90)
-
-    event_count = len(events)
-    first_established = parse_time(relationship["first_established_at"])
-    duration_days = max(0, (now_dt - first_established).days) if first_established else 0
-    duration_score = 100 if duration_days >= 730 else 85 if duration_days >= 365 else 70 if duration_days >= 180 else 45 if duration_days >= 90 else 20 if duration_days >= 30 else 0
-    positive_impact_score = min(30, max(0, sum(impact for _, impact in valid_times) * 3))
-    history_score = min(100, min(70, event_count * 10) + positive_impact_score)
+    interaction_frequency_score = calculate_interaction_frequency_score(
+        events, relationship["interaction_count"], now_dt
+    )
+    recency_score = calculate_recency_score(
+        relationship["last_contact_at"], events, now_dt
+    )
+    influence_score = calculate_influence_score(db, relationship)
+    history_score = calculate_history_score(events)
+    duration_score = calculate_duration_score(
+        relationship["first_established_at"], now_dt
+    )
 
     config = get_relationship_score_config(db)
     weights = config["weights"]
@@ -3453,18 +5499,148 @@ def calculate_relationship_strength_auto(db, relationship_id, now=None):
     )
     return get_relationship_detail(db, relationship_id)
 
+def recalculate_relationship_scores(
+    db,
+    now=None,
+    relationship_ids=None,
+    relationship_type_code=None,
+    updated_since=None,
+    force=True,
+):
+    """批量重算关系评分，并返回可审计的执行统计。"""
+    now = now or datetime.now(timezone.utc).isoformat()
+    clauses = ["1 = 1"]
+    values = []
+
+    if relationship_ids is not None:
+        normalized_ids = []
+        for relationship_id in relationship_ids:
+            try:
+                normalized_ids.append(int(relationship_id))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("relationshipIds must contain numeric ids") from exc
+        normalized_ids = list(dict.fromkeys(normalized_ids))
+        if not normalized_ids:
+            return {
+                "requested": 0,
+                "calculated": 0,
+                "skipped": 0,
+                "failed": 0,
+                "results": [],
+            }
+        placeholders = ",".join("?" for _ in normalized_ids)
+        clauses.append(f"r.id IN ({placeholders})")
+        values.extend(normalized_ids)
+
+    if relationship_type_code:
+        clauses.append("rt.code = ?")
+        values.append(str(relationship_type_code).strip())
+
+    if updated_since:
+        if not _parse_relationship_score_time(updated_since):
+            raise ValueError("updatedSince must be a valid ISO datetime")
+        clauses.append("r.updated_at >= ?")
+        values.append(str(updated_since))
+
+    rows = db.execute(
+        f"""SELECT r.id
+            FROM relationships r
+            JOIN relationship_types rt ON rt.id = r.relationship_type_id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY r.id""",
+        tuple(values),
+    ).fetchall()
+    results = []
+    for row in rows:
+        relationship_id = row["id"]
+        if not force:
+            existing = db.execute(
+                """SELECT 1 FROM relationship_scores
+                   WHERE relationship_id = ?
+                     AND calculated_by = 'relationship_score_engine_v1'
+                   LIMIT 1""",
+                (relationship_id,),
+            ).fetchone()
+            if existing:
+                results.append({"relationshipId": relationship_id, "status": "skipped"})
+                continue
+        try:
+            detail = calculate_relationship_strength_auto(db, relationship_id, now)
+            results.append({
+                "relationshipId": relationship_id,
+                "status": "calculated",
+                "score": detail["strength_score"],
+            })
+        except (LookupError, sqlite3.Error, ValueError) as exc:
+            results.append({
+                "relationshipId": relationship_id,
+                "status": "failed",
+                "error": str(exc),
+            })
+
+    return {
+        "requested": len(rows),
+        "calculated": sum(1 for item in results if item["status"] == "calculated"),
+        "skipped": sum(1 for item in results if item["status"] == "skipped"),
+        "failed": sum(1 for item in results if item["status"] == "failed"),
+        "results": results,
+    }
+
 def backfill_relationship_scores(db, now=None):
     """为旧关系补一次 V1 自动评分，避免每次启动重复写评分历史。"""
+    return recalculate_relationship_scores(db, now=now, force=False)
+
+def save_manual_relationship_score(db, relationship_id, payload, now=None):
+    """保存人工评分；人工接口不得伪造自动评分来源。"""
+    requested_source = payload.get("calculatedBy")
+    if requested_source not in (None, "", "manual"):
+        raise ValueError("manual scores must use calculatedBy=manual")
+    mode = str(payload.get("mode", "manual") or "manual").strip().lower()
+    if mode != "manual":
+        raise ValueError("manual score mode must be manual")
+    try:
+        score = float(payload.get("score"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("numeric score is required") from exc
+    if not 0 <= score <= 100:
+        raise ValueError("score must be between 0 and 100")
+    relationship = db.execute(
+        "SELECT * FROM relationships WHERE id = ?", (relationship_id,)
+    ).fetchone()
+    if not relationship:
+        raise LookupError("relationship not found")
+
     now = now or datetime.now(timezone.utc).isoformat()
-    rows = db.execute(
-        """SELECT r.id FROM relationships r
-           WHERE NOT EXISTS (
-             SELECT 1 FROM relationship_scores s
-             WHERE s.relationship_id = r.id AND s.calculated_by = 'relationship_score_engine_v1'
-           )"""
-    ).fetchall()
-    for row in rows:
-        calculate_relationship_strength_auto(db, row["id"], now)
+    score = round(score, 2)
+    calculated_at = payload.get("calculatedAt") or now
+    level = str(payload.get("level") or relationship_score_level(score))
+    db.execute(
+        """INSERT INTO relationship_scores
+           (relationship_id, score, level, interaction_frequency_score,
+            recency_score, influence_score, history_score, duration_score,
+            reason, calculated_by, calculated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            relationship_id,
+            score,
+            level,
+            payload.get("interactionFrequencyScore"),
+            payload.get("recencyScore"),
+            payload.get("influenceScore"),
+            payload.get("historyScore"),
+            payload.get("durationScore"),
+            str(payload.get("reason", "")).strip(),
+            "manual",
+            calculated_at,
+        ),
+    )
+    db.execute(
+        """UPDATE relationships
+           SET strength_score = ?, strength_level = ?, last_evaluated_at = ?, updated_at = ?
+           WHERE id = ?""",
+        (score, level, calculated_at, now, relationship_id),
+    )
+    return get_relationship_detail(db, relationship_id)
 
 def get_relationship_network(db, entity_type, entity_ref_id):
     center = db.execute(
@@ -3568,45 +5744,11 @@ class RelationshipService:
         }
 
     def calculate_strength(self, relationship_id, payload):
-        if payload.get("mode") == "auto" or payload.get("score") in (None, ""):
+        if str(payload.get("mode", "")).strip().lower() == "auto" or payload.get("score") in (None, ""):
             return calculate_relationship_strength_auto(self.db, relationship_id, self.now)
-        try:
-            score = float(payload.get("score"))
-        except (TypeError, ValueError):
-            raise ValueError("numeric score is required")
-        if not 0 <= score <= 100:
-            raise ValueError("score must be between 0 and 100")
-        relationship = self.db.execute("SELECT * FROM relationships WHERE id = ?", (relationship_id,)).fetchone()
-        if not relationship:
-            raise LookupError("relationship not found")
-        score = round(score, 2)
-        calculated_at = payload.get("calculatedAt") or self.now
-        self.db.execute(
-            """INSERT INTO relationship_scores
-               (relationship_id, score, level, interaction_frequency_score,
-                recency_score, influence_score, history_score, reason,
-                calculated_by, calculated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                relationship_id,
-                score,
-                str(payload.get("level") or relationship_score_level(score)),
-                payload.get("interactionFrequencyScore"),
-                payload.get("recencyScore"),
-                payload.get("influenceScore"),
-                payload.get("historyScore"),
-                str(payload.get("reason", "")).strip(),
-                str(payload.get("calculatedBy", "manual")).strip() or "manual",
-                calculated_at,
-            ),
+        return save_manual_relationship_score(
+            self.db, relationship_id, payload, self.now
         )
-        self.db.execute(
-            """UPDATE relationships
-               SET strength_score = ?, strength_level = ?, last_evaluated_at = ?, updated_at = ?
-               WHERE id = ?""",
-            (score, str(payload.get("level") or relationship_score_level(score)), calculated_at, self.now, relationship_id),
-        )
-        return get_relationship_detail(self.db, relationship_id)
 
     def record_change(self, relationship_id, payload):
         relationship = self.db.execute("SELECT * FROM relationships WHERE id = ?", (relationship_id,)).fetchone()
@@ -3915,10 +6057,293 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         with connect() as db:
+            if path.startswith("/api/customers/") and path.endswith("/growth-intelligence-report"):
+                try:
+                    customer_id = int(path.split("/")[3])
+                    report = get_latest_customer_growth_intelligence_report(db, customer_id)
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer id"}, 400)
+                if report is None:
+                    return self.send_json({"error": "customer growth intelligence report not found"}, 404)
+                return self.send_json(report)
+            if path.startswith("/api/customer-growth-intelligence-reports/"):
+                try:
+                    report_id = int(path.rsplit("/", 1)[1])
+                    return self.send_json(get_customer_growth_intelligence_report(db, report_id))
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid report id"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path == "/api/agents/customer-growth-intelligence/report":
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    customer_id = int(query.get("customerId", [""])[0])
+                except ValueError:
+                    return self.send_json({"error": "customerId is required"}, 400)
+                report = get_latest_customer_growth_intelligence_report(db, customer_id)
+                if report is None:
+                    return self.send_json({"error": "customer growth intelligence report not found"}, 404)
+                return self.send_json(report)
+            if path.startswith("/api/customers/") and path.endswith("/growth-prediction"):
+                try:
+                    customer_id = int(path.split("/")[3])
+                    prediction = get_latest_customer_growth_prediction(db, customer_id)
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer id"}, 400)
+                if prediction is None:
+                    return self.send_json({"error": "customer growth prediction not found"}, 404)
+                return self.send_json(prediction)
+            if path.startswith("/api/customer-growth-predictions/"):
+                try:
+                    prediction_id = int(path.rsplit("/", 1)[1])
+                    return self.send_json(get_customer_growth_prediction(db, prediction_id))
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid prediction id"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path == "/api/agents/customer-growth/prediction":
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    customer_id = int(query.get("customerId", [""])[0])
+                except ValueError:
+                    return self.send_json({"error": "customerId is required"}, 400)
+                prediction = get_latest_customer_growth_prediction(db, customer_id)
+                if prediction is None:
+                    return self.send_json({"error": "customer growth prediction not found"}, 404)
+                return self.send_json(prediction)
+            if path.startswith("/api/customers/") and path.endswith("/value-prediction"):
+                try:
+                    customer_id = int(path.split("/")[3])
+                    prediction = get_latest_customer_value_prediction(db, customer_id)
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer id"}, 400)
+                if prediction is None:
+                    return self.send_json({"error": "customer value prediction not found"}, 404)
+                return self.send_json(prediction)
+            if path.startswith("/api/customer-value-predictions/"):
+                try:
+                    prediction_id = int(path.rsplit("/", 1)[1])
+                    return self.send_json(get_customer_value_prediction(db, prediction_id))
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid prediction id"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path == "/api/agents/customer-value/prediction":
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    customer_id = int(query.get("customerId", [""])[0])
+                except ValueError:
+                    return self.send_json({"error": "customerId is required"}, 400)
+                prediction = get_latest_customer_value_prediction(db, customer_id)
+                if prediction is None:
+                    return self.send_json({"error": "customer value prediction not found"}, 404)
+                return self.send_json(prediction)
+            if path.startswith("/api/customers/") and path.endswith("/conversion-prediction"):
+                try:
+                    customer_id = int(path.split("/")[3])
+                    prediction = get_latest_customer_conversion_prediction(db, customer_id)
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer id"}, 400)
+                if prediction is None:
+                    return self.send_json({"error": "customer conversion prediction not found"}, 404)
+                return self.send_json(prediction)
+            if path.startswith("/api/customer-conversion-predictions/"):
+                try:
+                    prediction_id = int(path.rsplit("/", 1)[1])
+                    return self.send_json(get_customer_conversion_prediction(db, prediction_id))
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid prediction id"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path == "/api/agents/customer-conversion/prediction":
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    customer_id = int(query.get("customerId", [""])[0])
+                except ValueError:
+                    return self.send_json({"error": "customerId is required"}, 400)
+                prediction = get_latest_customer_conversion_prediction(db, customer_id)
+                if prediction is None:
+                    return self.send_json({"error": "customer conversion prediction not found"}, 404)
+                return self.send_json(prediction)
+            if path.startswith("/api/customers/") and path.endswith("/potential-prediction"):
+                try:
+                    customer_id = int(path.split("/")[3])
+                    prediction = get_latest_customer_potential_prediction(db, customer_id)
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer id"}, 400)
+                if prediction is None:
+                    return self.send_json({"error": "customer potential prediction not found"}, 404)
+                return self.send_json(prediction)
+            if path.startswith("/api/customer-potential-predictions/"):
+                try:
+                    prediction_id = int(path.rsplit("/", 1)[1])
+                    return self.send_json(get_prediction_by_id(db, prediction_id))
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid prediction id"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path == "/api/agents/customer-potential/prediction":
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    customer_id = int(query.get("customerId", [""])[0])
+                except ValueError:
+                    return self.send_json({"error": "customerId is required"}, 400)
+                prediction = get_latest_customer_potential_prediction(db, customer_id)
+                if prediction is None:
+                    return self.send_json({"error": "customer potential prediction not found"}, 404)
+                return self.send_json(prediction)
+            if path == "/api/insight-scores" or (path.startswith("/api/insights/") and path.endswith("/score")):
+                try:
+                    query = parse_qs(urlparse(self.path).query)
+                    minimum_score = int(query["minScore"][0]) if query.get("minScore") else None
+                    status, result = InsightScoreController(
+                        InsightScoreService(InsightScoreRepository(db))
+                    ).handle("GET", path, minimum_score=minimum_score)
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result, status)
+            if path.startswith("/api/insights/") and path.endswith("/actions"):
+                try:
+                    status, result = InsightActionController(
+                        InsightActionService(InsightActionRepository(db))
+                    ).handle("GET", path)
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result, status)
+            if (
+                path == "/api/insights"
+                or path.startswith("/api/insights/")
+                or (path.startswith("/api/customers/") and path.endswith("/insights"))
+            ):
+                try:
+                    status, result = InsightController(
+                        InsightService(InsightRepository(db))
+                    ).handle("GET", path, query=parse_qs(urlparse(self.path).query))
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result, status)
+            if path.startswith("/api/opportunities/") and path.endswith("/insights"):
+                try:
+                    status, result = OpportunityInsightController(
+                        OpportunityInsightService(OpportunityInsightRepository(db))
+                    ).handle("GET", path)
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result, status)
+            if path == "/api/facts/pending":
+                from fact_review_service import list_pending_fact_candidates
+                try:
+                    limit = parse_qs(urlparse(self.path).query).get("limit", [100])[0]
+                    return self.send_json(list_pending_fact_candidates(db, int(limit)))
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "limit must be an integer"}, 400)
+            if path.startswith("/api/facts/"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 3:
+                    return self.send_json({"error": "invalid fact candidate path"}, 400)
+                try:
+                    candidate_id = int(parts[2])
+                except ValueError:
+                    return self.send_json({"error": "invalid fact candidate id"}, 400)
+                from fact_review_service import get_fact_candidate
+                candidate = get_fact_candidate(db, candidate_id)
+                return self.send_json(candidate or {"error": "fact candidate not found"}, 200 if candidate else 404)
             if path == "/api/health":
                 return self.send_json({"status": "ok", "database": str(DB_PATH)})
+            if path.startswith("/api/profile-refresh-jobs/"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 3 or parts[0:2] != ["api", "profile-refresh-jobs"]:
+                    return self.send_json({"error": "invalid profile refresh job path"}, 400)
+                try:
+                    job_id = int(parts[2])
+                except ValueError:
+                    return self.send_json({"error": "invalid profile refresh job id"}, 400)
+                status = get_customer_profile_refresh_job_status(db, job_id)
+                return self.send_json(
+                    status or {"error": "profile refresh job not found"},
+                    200 if status else 404,
+                )
             if path == "/api/relationship-score/config":
                 return self.send_json(get_relationship_score_config(db))
+            if path == "/api/relationship-score-models":
+                params = parse_qs(urlparse(self.path).query)
+                try:
+                    return self.send_json(
+                        list_relationship_score_models(db, params.get("status", [None])[0])
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+            if path.startswith("/api/relationship-score-models/") and "/dimensions" in path:
+                parts = path.strip("/").split("/")
+                if len(parts) in (8, 9) and parts[5] == "dimensions" and parts[7] == "rules":
+                    model_id = unquote(parts[2]).strip()
+                    version_id = unquote(parts[4]).strip()
+                    dimension_id = unquote(parts[6]).strip()
+                    try:
+                        _ensure_dimension_parent_model(db, model_id, version_id)
+                        if len(parts) == 8:
+                            return self.send_json(list_relationship_score_rules(db, dimension_id))
+                        rule = get_relationship_score_rule(db, dimension_id, unquote(parts[8]))
+                        return self.send_json(
+                            rule or {"error": "relationship score rule not found"},
+                            200 if rule else 404,
+                        )
+                    except LookupError as exc:
+                        return self.send_json({"error": str(exc)}, 404)
+                if len(parts) not in (6, 7) or parts[0:2] != ["api", "relationship-score-models"] or parts[3] != "versions" or parts[5] != "dimensions":
+                    return self.send_json({"error": "invalid relationship score dimension path"}, 400)
+                model_id = unquote(parts[2]).strip()
+                version_id = unquote(parts[4]).strip()
+                try:
+                    _ensure_dimension_parent_model(db, model_id, version_id)
+                    if len(parts) == 6:
+                        return self.send_json(list_relationship_score_dimensions(db, version_id))
+                    dimension = get_relationship_score_dimension(db, version_id, unquote(parts[6]))
+                    return self.send_json(
+                        dimension or {"error": "relationship score dimension not found"},
+                        200 if dimension else 404,
+                    )
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path.startswith("/api/relationship-score-models/") and "/versions" in path:
+                parts = path.strip("/").split("/")
+                if len(parts) not in (4, 5) or parts[0:2] != ["api", "relationship-score-models"] or parts[3] != "versions":
+                    return self.send_json({"error": "invalid relationship score model version path"}, 400)
+                model_id = unquote(parts[2]).strip()
+                try:
+                    if len(parts) == 4:
+                        params = parse_qs(urlparse(self.path).query)
+                        return self.send_json(
+                            list_relationship_score_model_versions(
+                                db, model_id, params.get("status", [None])[0]
+                            )
+                        )
+                    version = get_relationship_score_model_version(db, model_id, unquote(parts[4]))
+                    return self.send_json(
+                        version or {"error": "relationship score model version not found"},
+                        200 if version else 404,
+                    )
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+            if path.startswith("/api/relationship-score-models/"):
+                model_id = unquote(path.split("/api/relationship-score-models/", 1)[1]).strip()
+                if not model_id or "/" in model_id:
+                    return self.send_json({"error": "invalid relationship score model id"}, 400)
+                item = get_relationship_score_model(db, model_id)
+                return self.send_json(
+                    item or {"error": "relationship score model not found"},
+                    200 if item else 404,
+                )
             if path == "/api/relationship-types":
                 params = parse_qs(urlparse(self.path).query)
                 clauses = []
@@ -4116,6 +6541,24 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT id, name, customer_type, industry, status FROM customers ORDER BY name, id"
                 ).fetchall()
                 return self.send_json([dict(row) for row in rows])
+            if path.startswith("/api/customers/") and path.endswith("/facts"):
+                parts = path.strip("/").split("/")
+                try:
+                    customer_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid customer id"}, 400)
+                params = parse_qs(urlparse(self.path).query)
+                try:
+                    facts = CustomerFactRepository(db).list_for_customer(
+                        customer_id,
+                        params.get("factType", [None])[0],
+                        params.get("status", [None])[0],
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json([fact.to_dict() for fact in facts])
             if path == "/api/projects":
                 query = urlparse(self.path).query
                 params = dict(item.split("=", 1) for item in query.split("&") if "=" in item)
@@ -4199,10 +6642,23 @@ class Handler(BaseHTTPRequestHandler):
                     "rules": CUSTOMER_FACT_EXTRACTION_RULES,
                 })
             if path.startswith("/api/customer-fact-extraction-runs/"):
+                parts = path.strip("/").split("/")
                 try:
-                    run_id = int(path.strip("/").split("/")[2])
+                    run_id = int(parts[2])
                 except (IndexError, ValueError):
                     return self.send_json({"error": "invalid fact extraction run id"}, 400)
+                if len(parts) == 4 and parts[3] == "candidates":
+                    if not db.execute(
+                        "SELECT id FROM customer_fact_extraction_runs WHERE id = ?",
+                        (run_id,),
+                    ).fetchone():
+                        return self.send_json({"error": "fact extraction run not found"}, 404)
+                    params = parse_qs(urlparse(self.path).query)
+                    return self.send_json(
+                        list_customer_fact_extraction_candidates(
+                            db, run_id, params.get("status", [None])[0]
+                        )
+                    )
                 run = get_customer_fact_extraction_run(db, run_id)
                 return self.send_json(run or {"error": "fact extraction run not found"}, 200 if run else 404)
             if path == "/api/customer-profiles":
@@ -4479,6 +6935,26 @@ class Handler(BaseHTTPRequestHandler):
                     item["skills"] = [dict(x) for x in db.execute("SELECT * FROM agent_skills WHERE agent_id = ? ORDER BY id", (row["id"],)).fetchall()]
                     agents.append(item)
                 return self.send_json(agents)
+            if path.startswith("/api/agents/") and path.endswith("/facts"):
+                agent_id = path.strip("/").split("/")[2]
+                if not db.execute("SELECT 1 FROM agents WHERE id = ?", (agent_id,)).fetchone():
+                    return self.send_json({"error": "agent not found"}, 404)
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    customer_id = int(query["customerId"][0]) if query.get("customerId") else None
+                    opportunity_id = int(query["opportunityId"][0]) if query.get("opportunityId") else None
+                    limit = int(query["limit"][0]) if query.get("limit") else 20
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "invalid fact context parameters"}, 400)
+                try:
+                    from fact_agent_service import get_agent_fact_context
+                    context = get_agent_fact_context(
+                        db, agent_id, customer_id=customer_id,
+                        opportunity_id=opportunity_id, limit=limit,
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                return self.send_json(context)
             if path.startswith("/api/agents/"):
                 agent_id = path.strip("/").split("/")[2]
                 row = db.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
@@ -4496,6 +6972,115 @@ class Handler(BaseHTTPRequestHandler):
         data = self.read_json()
         now = datetime.now(timezone.utc).isoformat()
         with connect() as db:
+            if path.startswith("/api/insights/"):
+                try:
+                    status, result = InsightController(
+                        InsightService(InsightRepository(db))
+                    ).handle("PUT", path, data)
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result, status)
+            if path.startswith("/api/customer-facts/"):
+                try:
+                    fact_id = int(path.strip("/").split("/")[2])
+                    fact = CustomerFactRepository(db).update(fact_id, data, now)
+                except (IndexError, ValueError) as exc:
+                    return self.send_json({"error": str(exc) or "invalid customer fact id"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(fact.to_dict())
+            if path.startswith("/api/relationship-score-models/") and "/rules/" in path:
+                parts = path.strip("/").split("/")
+                if len(parts) != 9 or parts[5] != "dimensions" or parts[7] != "rules":
+                    return self.send_json({"error": "invalid relationship score rule path"}, 400)
+                try:
+                    _ensure_dimension_parent_model(db, unquote(parts[2]), unquote(parts[4]))
+                    return self.send_json(
+                        update_relationship_score_rule(
+                            db,
+                            unquote(parts[6]),
+                            unquote(parts[8]),
+                            data,
+                        )
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path.startswith("/api/relationship-score-models/") and "/dimensions/" in path:
+                parts = path.strip("/").split("/")
+                if len(parts) != 7 or parts[0:2] != ["api", "relationship-score-models"] or parts[3] != "versions" or parts[5] != "dimensions":
+                    return self.send_json({"error": "invalid relationship score dimension path"}, 400)
+                try:
+                    _ensure_dimension_parent_model(db, unquote(parts[2]), unquote(parts[4]))
+                    return self.send_json(
+                        update_relationship_score_dimension(
+                            db,
+                            unquote(parts[4]),
+                            unquote(parts[6]),
+                            data,
+                        )
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path.startswith("/api/relationship-score-models/") and "/versions/" in path:
+                parts = path.strip("/").split("/")
+                if len(parts) != 5 or parts[0:2] != ["api", "relationship-score-models"] or parts[3] != "versions":
+                    return self.send_json({"error": "invalid relationship score model version path"}, 400)
+                model_id = unquote(parts[2]).strip()
+                version_id = unquote(parts[4]).strip()
+                try:
+                    return self.send_json(
+                        update_relationship_score_model_version(
+                            db, model_id, version_id, data, now
+                        ),
+                        200,
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path.startswith("/api/relationship-score-models/"):
+                model_id = unquote(path.split("/api/relationship-score-models/", 1)[1]).strip()
+                if not model_id or "/" in model_id:
+                    return self.send_json({"error": "invalid relationship score model id"}, 400)
+                try:
+                    return self.send_json(
+                        update_relationship_score_model(db, model_id, data, now),
+                        200,
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path.startswith("/api/customer-profiles/"):
+                parts = path.strip("/").split("/")
+                if len(parts) == 5 and parts[3] == "facts":
+                    try:
+                        profile_id = int(parts[2])
+                        fact_id = int(parts[4])
+                    except (IndexError, ValueError):
+                        return self.send_json({"error": "invalid customer profile fact id"}, 400)
+                    try:
+                        current = db.execute(
+                            "SELECT fact_code FROM customer_profile_facts WHERE profile_id = ? AND id = ?",
+                            (profile_id, fact_id),
+                        ).fetchone()
+                        if not current:
+                            raise LookupError("customer profile fact not found")
+                        fact_payload = dict(data)
+                        fact_payload.setdefault("factCode", current["fact_code"])
+                        return self.send_json(
+                            upsert_customer_profile_fact(db, profile_id, fact_payload, now)
+                        )
+                    except ValueError as exc:
+                        return self.send_json({"error": str(exc)}, 400)
+                    except LookupError as exc:
+                        return self.send_json({"error": str(exc)}, 404)
             if path == "/api/relationship-score/config":
                 try:
                     weights = normalize_relationship_score_weights(data)
@@ -4532,7 +7117,10 @@ class Handler(BaseHTTPRequestHandler):
                             description, now, now,
                         ),
                     )
-                return self.send_json(get_relationship_score_config(db))
+                recalculation = recalculate_relationship_scores(db, now=now, force=True)
+                config_result = get_relationship_score_config(db)
+                config_result["recalculation"] = recalculation
+                return self.send_json(config_result)
             if path.startswith("/api/customer-developments/"):
                 parts = path.strip("/").split("/")
                 if len(parts) == 3:
@@ -4746,8 +7334,66 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         path = urlparse(self.path).path
         with connect() as db:
+            if path.startswith("/api/insights/"):
+                try:
+                    status, result = InsightController(
+                        InsightService(InsightRepository(db))
+                    ).handle("DELETE", path)
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result, status)
+            if path.startswith("/api/customer-facts/"):
+                try:
+                    fact_id = int(path.strip("/").split("/")[2])
+                    CustomerFactRepository(db).delete(fact_id)
+                except (IndexError, ValueError) as exc:
+                    return self.send_json({"error": str(exc) or "invalid customer fact id"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json({"status": "deleted", "factId": fact_id})
+            if path.startswith("/api/relationship-score-models/") and "/dimensions/" in path:
+                parts = path.strip("/").split("/")
+                if len(parts) == 9 and parts[5] == "dimensions" and parts[7] == "rules":
+                    try:
+                        _ensure_dimension_parent_model(db, unquote(parts[2]), unquote(parts[4]))
+                        result = delete_relationship_score_rule(
+                            db, unquote(parts[6]), unquote(parts[8])
+                        )
+                        return self.send_json(result, 200)
+                    except ValueError as exc:
+                        return self.send_json({"error": str(exc)}, 400)
+                    except LookupError as exc:
+                        return self.send_json({"error": str(exc)}, 404)
+                if len(parts) != 7 or parts[0:2] != ["api", "relationship-score-models"] or parts[3] != "versions" or parts[5] != "dimensions":
+                    return self.send_json({"error": "invalid relationship score dimension path"}, 400)
+                try:
+                    _ensure_dimension_parent_model(db, unquote(parts[2]), unquote(parts[4]))
+                    result = delete_relationship_score_dimension(
+                        db,
+                        unquote(parts[4]),
+                        unquote(parts[6]),
+                    )
+                    return self.send_json(result, 200)
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
             if path.startswith("/api/customer-profiles/"):
                 parts = path.strip("/").split("/")
+                if len(parts) == 5 and parts[3] == "facts":
+                    try:
+                        profile_id = int(parts[2])
+                        fact_id = int(parts[4])
+                    except (IndexError, ValueError):
+                        return self.send_json({"error": "invalid customer profile fact id"}, 400)
+                    try:
+                        return self.send_json(
+                            delete_customer_profile_fact(db, profile_id, fact_id, now)
+                        )
+                    except LookupError as exc:
+                        return self.send_json({"error": str(exc)}, 404)
                 if len(parts) == 5 and parts[3] in {"projects", "opportunities", "persons", "developments"}:
                     try:
                         profile_id = int(parts[2])
@@ -4820,6 +7466,276 @@ class Handler(BaseHTTPRequestHandler):
         data = self.read_json()
         now = datetime.now(timezone.utc).isoformat()
         with connect() as db:
+            if path == "/api/agents/customer-growth-intelligence/run":
+                try:
+                    customer_id = int(data.get("customerId"))
+                    report = run_customer_growth_intelligence_agent(db, customer_id, now=now)
+                    db.commit()
+                    return self.send_json(report, 201)
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "customerId is required"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path == "/api/agents/customer-growth/predict":
+                try:
+                    customer_id = int(data.get("customerId"))
+                    prediction = predict_customer_growth(db, customer_id, now=now)
+                    db.commit()
+                    return self.send_json(prediction, 201)
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "customerId is required"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path == "/api/agents/customer-value/predict":
+                try:
+                    customer_id = int(data.get("customerId"))
+                    prediction = predict_customer_value(db, customer_id, now=now)
+                    db.commit()
+                    return self.send_json(prediction, 201)
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "customerId is required"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path == "/api/agents/customer-conversion/predict":
+                try:
+                    customer_id = int(data.get("customerId"))
+                    prediction = predict_customer_conversion(db, customer_id, now=now)
+                    db.commit()
+                    return self.send_json(prediction, 201)
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "customerId is required"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path == "/api/agents/customer-potential/predict":
+                try:
+                    customer_id = int(data.get("customerId"))
+                    prediction = predict_customer_potential(db, customer_id, now=now)
+                    db.commit()
+                    return self.send_json(prediction, 201)
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "customerId is required"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path.startswith("/api/insights/") and path.endswith("/score"):
+                try:
+                    status, result = InsightScoreController(
+                        InsightScoreService(InsightScoreRepository(db))
+                    ).handle("POST", path, now=now)
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result, status)
+            if path.startswith("/api/insights/") and path.endswith("/actions"):
+                try:
+                    status, result = InsightActionController(
+                        InsightActionService(InsightActionRepository(db))
+                    ).handle(
+                        "POST",
+                        path,
+                        data,
+                        action_creator=lambda **kwargs: create_action_record(db, **kwargs),
+                        now=now,
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result, status)
+            if path == "/api/insights":
+                try:
+                    status, result = InsightController(
+                        InsightService(InsightRepository(db))
+                    ).handle("POST", path, data)
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result, status)
+            if path.startswith("/api/facts/") and path.endswith("/sync/retry"):
+                parts = path.strip("/").split("/")
+                try:
+                    candidate_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid fact candidate id"}, 400)
+                from fact_approval_ontology_sync import retry_ontology_sync
+                try:
+                    result = retry_ontology_sync(db, candidate_id, now)
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 409)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result, 200 if result.get("success") else 409)
+            if path.startswith("/api/facts/") and path.count("/") == 4:
+                parts = path.strip("/").split("/")
+                try:
+                    candidate_id = int(parts[2])
+                except ValueError:
+                    return self.send_json({"error": "invalid fact candidate id"}, 400)
+                action = {"approve": "approve", "reject": "reject", "modify": "modify"}.get(parts[3])
+                if not action:
+                    return self.send_json({"error": "unsupported fact review operation"}, 404)
+                from fact_review_service import review_fact_candidate
+                try:
+                    result = review_fact_candidate(
+                        db, candidate_id, action,
+                        data.get("reviewUser") or data.get("review_user"), data, now,
+                    )
+                except ValueError as exc:
+                    db.rollback()
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    db.rollback()
+                    return self.send_json({"error": str(exc)}, 404)
+                if not result.get("ontologyResult", {}).get("success", True):
+                    return self.send_json(result, 409)
+                return self.send_json(result)
+            if path.startswith("/api/customers/") and path.endswith("/facts"):
+                parts = path.strip("/").split("/")
+                try:
+                    customer_id = int(parts[2])
+                    fact = CustomerFactRepository(db).create(customer_id, data, now)
+                except (IndexError, ValueError) as exc:
+                    return self.send_json({"error": str(exc) or "invalid customer id"}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(fact.to_dict(), 201)
+            if path.startswith("/api/customer-fact-extraction-candidates/") and path.endswith("/review"):
+                parts = path.strip("/").split("/")
+                try:
+                    candidate_id = int(parts[2])
+                except (IndexError, ValueError):
+                    return self.send_json({"error": "invalid fact extraction candidate id"}, 400)
+                try:
+                    result = review_customer_fact_extraction_candidate(
+                        db,
+                        candidate_id,
+                        data.get("decision"),
+                        data,
+                        now,
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+                return self.send_json(result, 200)
+            if path.startswith("/api/relationship-score-models/") and path.endswith("/rules/reorder"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 9 or parts[5] != "dimensions" or parts[7] != "rules" or parts[8] != "reorder":
+                    return self.send_json({"error": "invalid relationship score rule reorder path"}, 400)
+                try:
+                    _ensure_dimension_parent_model(db, unquote(parts[2]), unquote(parts[4]))
+                    return self.send_json(
+                        reorder_relationship_score_rules(
+                            db, unquote(parts[6]), data.get("ruleIds")
+                        )
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path.startswith("/api/relationship-score-models/") and path.endswith("/rules"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 8 or parts[5] != "dimensions" or parts[7] != "rules":
+                    return self.send_json({"error": "invalid relationship score rule path"}, 400)
+                try:
+                    _ensure_dimension_parent_model(db, unquote(parts[2]), unquote(parts[4]))
+                    return self.send_json(
+                        create_relationship_score_rule(db, unquote(parts[6]), data),
+                        201,
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path.startswith("/api/relationship-score-models/") and path.endswith("/dimensions"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 6 or parts[0:2] != ["api", "relationship-score-models"] or parts[3] != "versions" or parts[5] != "dimensions":
+                    return self.send_json({"error": "invalid relationship score dimension path"}, 400)
+                try:
+                    _ensure_dimension_parent_model(db, unquote(parts[2]), unquote(parts[4]))
+                    return self.send_json(
+                        create_relationship_score_dimension(
+                            db,
+                            unquote(parts[4]),
+                            data,
+                        ),
+                        201,
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path.startswith("/api/relationship-score-models/") and path.endswith("/publish"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 6 or parts[0:2] != ["api", "relationship-score-models"] or parts[3] != "versions" or parts[5] != "publish":
+                    return self.send_json({"error": "invalid relationship score model publish path"}, 400)
+                model_id = unquote(parts[2]).strip()
+                version_id = unquote(parts[4]).strip()
+                try:
+                    return self.send_json(
+                        publish_relationship_score_model_version(
+                            db, model_id, version_id, now
+                        ),
+                        200,
+                    )
+                except ValueError as exc:
+                    try:
+                        details = json.loads(str(exc))
+                    except json.JSONDecodeError:
+                        details = {"valid": False, "errors": [{"code": "PUBLISH_VALIDATION_FAILED", "message": str(exc)}]}
+                    return self.send_json({"error": "version publish validation failed", "validation": details}, 409)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path.startswith("/api/relationship-score-models/") and path.endswith("/validate"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 6 or parts[0:2] != ["api", "relationship-score-models"] or parts[3] != "versions" or parts[5] != "validate":
+                    return self.send_json({"error": "invalid relationship score model validation path"}, 400)
+                try:
+                    return self.send_json(
+                        validate_relationship_score_model_version(
+                            db, unquote(parts[2]), unquote(parts[4])
+                        )
+                    )
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path.startswith("/api/relationship-score-models/") and path.endswith("/versions"):
+                parts = path.strip("/").split("/")
+                if len(parts) != 4 or parts[0:2] != ["api", "relationship-score-models"] or parts[3] != "versions":
+                    return self.send_json({"error": "invalid relationship score model version path"}, 400)
+                model_id = unquote(parts[2]).strip()
+                try:
+                    return self.send_json(
+                        create_relationship_score_model_version(
+                            db, model_id, data, now
+                        ),
+                        201,
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
+            if path == "/api/relationship-score-models":
+                try:
+                    return self.send_json(create_relationship_score_model(db, data, now), 201)
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+            if path == "/api/relationship-score/recalculate":
+                relationship_ids = data.get("relationshipIds")
+                if relationship_ids is not None and not isinstance(relationship_ids, list):
+                    return self.send_json({"error": "relationshipIds must be an array"}, 400)
+                try:
+                    result = recalculate_relationship_scores(
+                        db,
+                        now=now,
+                        relationship_ids=relationship_ids,
+                        relationship_type_code=data.get("relationshipTypeCode"),
+                        updated_since=data.get("updatedSince"),
+                        force=bool(data.get("force", True)),
+                    )
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                return self.send_json(result, 200)
             if path == "/api/customer-profile-scoring/models":
                 model_code = str(data.get("modelCode", "")).strip()
                 name = str(data.get("name", "")).strip()
@@ -4978,42 +7894,14 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send_json({"error": str(exc)}, 404)
                 try:
                     relationship_id = int(parts[2])
-                    score = float(data.get("score"))
-                except (IndexError, TypeError, ValueError):
-                    return self.send_json({"error": "relationship id and numeric score are required"}, 400)
-                if not 0 <= score <= 100:
-                    return self.send_json({"error": "score must be between 0 and 100"}, 400)
-                relationship = db.execute("SELECT * FROM relationships WHERE id = ?", (relationship_id,)).fetchone()
-                if not relationship:
-                    return self.send_json({"error": "relationship not found"}, 404)
-                score = round(score, 2)
-                calculated_at = data.get("calculatedAt") or now
-                db.execute(
-                    """INSERT INTO relationship_scores
-                       (relationship_id, score, level, interaction_frequency_score,
-                        recency_score, influence_score, history_score, reason,
-                        calculated_by, calculated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        relationship_id,
-                        score,
-                        str(data.get("level") or relationship_score_level(score)),
-                        data.get("interactionFrequencyScore"),
-                        data.get("recencyScore"),
-                        data.get("influenceScore"),
-                        data.get("historyScore"),
-                        str(data.get("reason", "")).strip(),
-                        str(data.get("calculatedBy", "manual")).strip() or "manual",
-                        calculated_at,
-                    ),
-                )
-                db.execute(
-                    """UPDATE relationships
-                       SET strength_score = ?, strength_level = ?, last_evaluated_at = ?, updated_at = ?
-                       WHERE id = ?""",
-                    (score, str(data.get("level") or relationship_score_level(score)), calculated_at, now, relationship_id),
-                )
-                return self.send_json(get_relationship_detail(db, relationship_id), 201)
+                    return self.send_json(
+                        save_manual_relationship_score(db, relationship_id, data, now),
+                        201,
+                    )
+                except (IndexError, TypeError, ValueError) as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                except LookupError as exc:
+                    return self.send_json({"error": str(exc)}, 404)
             if path.startswith("/api/relationships/") and path.endswith("/events"):
                 parts = path.strip("/").split("/")
                 try:
@@ -5205,6 +8093,22 @@ class Handler(BaseHTTPRequestHandler):
                     except ValueError as error:
                         return self.send_json({"error": str(error)}, 400)
                     return self.send_json(result, 201)
+                if len(parts) == 4 and parts[3] == "refresh":
+                    sources = data.get("sources")
+                    mode = str(data.get("mode", "formal")).strip().lower()
+                    try:
+                        job = create_customer_profile_refresh_job(db, profile_id, sources, mode, now=now)
+                    except ValueError as error:
+                        return self.send_json({"error": str(error)}, 400)
+                    except LookupError as error:
+                        return self.send_json({"error": str(error)}, 404)
+                    threading.Thread(
+                        target=run_customer_profile_refresh_job,
+                        args=(job["jobId"],),
+                        name=f"customer-profile-refresh-{job['jobId']}",
+                        daemon=True,
+                    ).start()
+                    return self.send_json(job, 202)
                 if len(parts) == 5 and parts[3] == "summaries" and parts[4] == "generate":
                     return self.send_json(generate_customer_profile_summary(db, profile_id, now), 201)
                 if len(parts) != 4:
@@ -6300,6 +9204,29 @@ class Handler(BaseHTTPRequestHandler):
                 agent_row = db.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
                 if not agent_row:
                     return self.send_json({"error": "agent not found"}, 404)
+                if agent_id == "customer-insight":
+                    try:
+                        customer_id = int(data["customerId"])
+                    except (KeyError, TypeError, ValueError):
+                        return self.send_json({"error": "customerId is required and must be an integer"}, 400)
+                    try:
+                        report = CustomerInsightAgent(db).run(customer_id, now)
+                    except LookupError as exc:
+                        return self.send_json({"error": str(exc)}, 404)
+                    run_cur = db.execute(
+                        """INSERT INTO agent_runs
+                           (agent_id, opportunity_id, input_json, result, status, created_at)
+                           VALUES (?, NULL, ?, ?, 'completed', ?)""",
+                        (agent_id, json.dumps(data, ensure_ascii=False), json.dumps(report, ensure_ascii=False), now),
+                    )
+                    return self.send_json({
+                        "id": run_cur.lastrowid,
+                        "agentId": agent_id,
+                        "status": "completed",
+                        "insights": report["insights"],
+                        "report": report["report"],
+                        "contextSummary": report["contextSummary"],
+                    }, 201)
                 try:
                     opportunity_id = int(data["opportunityId"]) if data.get("opportunityId") else None
                 except (TypeError, ValueError):
@@ -6308,7 +9235,24 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT 1 FROM opportunities WHERE id = ?", (opportunity_id,)
                 ).fetchone():
                     return self.send_json({"error": "opportunity not found"}, 404)
+                try:
+                    customer_id = int(data["customerId"]) if data.get("customerId") else None
+                except (TypeError, ValueError):
+                    return self.send_json({"error": "invalid customer id"}, 400)
                 result = data.get("result") or "已完成语义分析，生成待确认的客户开发建议。"
+                fact_context = {"facts": [], "confirmedFacts": [], "suggestions": []}
+                try:
+                    from fact_agent_service import get_agent_fact_context
+                    fact_context = get_agent_fact_context(
+                        db, agent_id, customer_id=customer_id,
+                        opportunity_id=opportunity_id,
+                    )
+                    if fact_context["businessBasis"]:
+                        result = f"{result} 业务依据：{'；'.join(fact_context['businessBasis'])}。"
+                    if fact_context["提示"]:
+                        result = f"{result} 待确认提示：{'；'.join(fact_context['提示'])}。"
+                except ValueError:
+                    pass
                 relationship_context = ""
                 if opportunity_id:
                     relationship_analysis = RelationshipService(db).find_decision_makers(opportunity_id)
@@ -6348,7 +9292,7 @@ class Handler(BaseHTTPRequestHandler):
                         now=now,
                     )
                     db.execute("INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)", (opportunity_id, "agent_run", f"{agent_id} 已运行：{result}", now))
-                return self.send_json({"id": cur.lastrowid, "agentId": agent_id, "result": result, "status": "completed", "action": action}, 201)
+                return self.send_json({"id": cur.lastrowid, "agentId": agent_id, "result": result, "factContext": fact_context, "status": "completed", "action": action}, 201)
         return self.send_json({"error": "not found"}, 404)
 
     def serve_file(self, path, content_type):
@@ -6366,7 +9310,7 @@ if __name__ == "__main__":
     init_db()
 
     import os
-    port = int(os.environ.get("PORT", 8765))
+    port = int(os.environ.get("PORT", 8877))
 
     server = ThreadingHTTPServer(
         ("0.0.0.0", port),
