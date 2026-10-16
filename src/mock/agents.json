@@ -1,0 +1,5 @@
+[
+  {"id":"agent-customer","name":"客户洞察 Agent","agentType":"CUSTOMER_INSIGHT","scene":"客户经营","description":"从客户、关系、项目和经营指标中识别增长机会与风险。","inputObjects":["Customer","Project","Opportunity","Person","Relationship"],"outputTypes":["Insight","Action","Forecast"],"skills":["客户画像","增长潜力评分","关键人识别"],"promptVersion":"v1","status":"运行中"},
+  {"id":"agent-opportunity","name":"商机推进 Agent","agentType":"OPPORTUNITY_PROGRESS","scene":"销售执行","description":"检查商机阶段准入条件，发现阻塞事实并生成下一步行动。","inputObjects":["Customer","Project","Section","Opportunity","Relationship"],"outputTypes":["Insight","Action","Forecast"],"skills":["阶段诊断","赢率解释","下一步行动"],"promptVersion":"v1","status":"运行中"},
+  {"id":"agent-project","name":"项目突破 Agent","agentType":"PROJECT_BREAKTHROUGH","scene":"工程项目","description":"围绕项目阶段、标段和参与方识别产品方案切入口。","inputObjects":["Customer","Project","Section","Person","Relationship"],"outputTypes":["Insight","Action","Forecast"],"skills":["标段识别","设计院关系","方案推荐"],"promptVersion":"v1","status":"运行中"}
+]

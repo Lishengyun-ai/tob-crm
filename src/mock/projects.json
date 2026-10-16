@@ -1,0 +1,62 @@
+[
+  {
+    "id": "prj-001",
+    "customerId": "cus-001",
+    "name": "华东区域数字化营销项目",
+    "projectStage": "方案评审",
+    "projectStageCode": "SOLUTION_REVIEW",
+    "location": "上海 · 虹桥商务区",
+    "owner": "李盛云",
+    "sectionIds": ["sec-001", "sec-002"],
+    "sections": [{"id":"sec-001","projectId":"prj-001","name":"营销协同标段","stage":"方案评审","sectionStageCode":"SOLUTION_REVIEW","ownerOrg":null,"designOrg":null,"contractor":null,"agentOrg":null,"productSolution":"营销自动化 + 渠道协同","estimatedAmount":1280000,"opportunityId":"opp-001"},{"id":"sec-002","projectId":"prj-001","name":"数据中台标段","stage":"需求确认","sectionStageCode":"DISCOVERY","ownerOrg":null,"designOrg":null,"contractor":null,"agentOrg":null,"productSolution":"客户数据平台","estimatedAmount":null,"opportunityId":null}],
+    "progress": 62,
+    "estimatedValue": 1280000,
+    "nextMilestone": "方案评审会议",
+    "aiInsight": "营销协同标段已具备推进条件，数据中台标段仍缺少 IT 负责人确认。"
+  },
+  {
+    "id": "prj-002",
+    "customerId": "cus-001",
+    "name": "华东建材智能工厂一期",
+    "projectStage": "招标准备",
+    "projectStageCode": "TENDER_PREP",
+    "location": "江苏 · 昆山",
+    "owner": "王敏",
+    "sectionIds": ["sec-003"],
+    "sections": [{"id":"sec-003","projectId":"prj-002","name":"工程材料供应标段","stage":"招标准备","sectionStageCode":"TENDER_PREP","ownerOrg":null,"designOrg":"华东建筑设计院","contractor":null,"agentOrg":null,"productSolution":"工业防护涂料 + 现场交付","estimatedAmount":3600000,"opportunityId":"opp-002"}],
+    "progress": 38,
+    "estimatedValue": 3600000,
+    "nextMilestone": "技术规格书确认",
+    "aiInsight": "工程材料采购窗口预计在下月打开，建议提前锁定设计院关系。"
+  },
+  {
+    "id": "prj-003",
+    "customerId": "cus-002",
+    "name": "星河商业会员增长平台",
+    "projectStage": "需求确认",
+    "projectStageCode": "DISCOVERY",
+    "location": "广州 · 珠江新城",
+    "owner": "赵一",
+    "sectionIds": ["sec-004"],
+    "sections": [{"id":"sec-004","projectId":"prj-003","name":"会员运营试点标段","stage":"需求确认","sectionStageCode":"DISCOVERY","ownerOrg":null,"designOrg":null,"contractor":null,"agentOrg":null,"productSolution":"客户数据平台 + 复购预测","estimatedAmount":860000,"opportunityId":"opp-003"}],
+    "progress": 24,
+    "estimatedValue": 860000,
+    "nextMilestone": "业务需求工作坊",
+    "aiInsight": "业务目标已出现，但采购和技术评审角色还未进入项目关系图。"
+  },
+  {
+    "id": "prj-004",
+    "customerId": "cus-003",
+    "name": "南方能源供应链协同工程",
+    "projectStage": "初步接触",
+    "projectStageCode": "EARLY_CONTACT",
+    "location": "广东 · 惠州",
+    "owner": "陈晨",
+    "sectionIds": ["sec-005"],
+    "sections": [{"id":"sec-005","projectId":"prj-004","name":"供应链协同标段","stage":"初步接触","sectionStageCode":"EARLY_CONTACT","ownerOrg":null,"designOrg":null,"contractor":null,"agentOrg":null,"productSolution":"供应链协同平台","estimatedAmount":null,"opportunityId":null}],
+    "progress": 12,
+    "estimatedValue": 2400000,
+    "nextMilestone": "立项信息核验",
+    "aiInsight": "当前更像项目线索而非成熟商机，需要先确认建设单位和采购模式。"
+  }
+]

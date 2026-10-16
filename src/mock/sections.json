@@ -1,0 +1,7 @@
+[
+  {"id":"sec-001","projectId":"prj-001","name":"营销协同标段","sectionStage":"方案评审","sectionStageCode":"SOLUTION_REVIEW","ownerOrg":null,"designOrg":null,"contractor":null,"agentOrg":null,"productSolution":"营销自动化 + 渠道协同","estimatedAmount":1280000},
+  {"id":"sec-002","projectId":"prj-001","name":"数据中台标段","sectionStage":"需求确认","sectionStageCode":"DISCOVERY","ownerOrg":null,"designOrg":null,"contractor":null,"agentOrg":null,"productSolution":"客户数据平台","estimatedAmount":null},
+  {"id":"sec-003","projectId":"prj-002","name":"工程材料供应标段","sectionStage":"招标准备","sectionStageCode":"TENDER_PREP","ownerOrg":null,"designOrg":"华东建筑设计院","contractor":null,"agentOrg":null,"productSolution":"工业防护涂料 + 现场交付","estimatedAmount":3600000},
+  {"id":"sec-004","projectId":"prj-003","name":"会员运营试点标段","sectionStage":"需求确认","sectionStageCode":"DISCOVERY","ownerOrg":null,"designOrg":null,"contractor":null,"agentOrg":null,"productSolution":"客户数据平台 + 复购预测","estimatedAmount":860000},
+  {"id":"sec-005","projectId":"prj-004","name":"供应链协同标段","sectionStage":"初步接触","sectionStageCode":"EARLY_CONTACT","ownerOrg":null,"designOrg":null,"contractor":null,"agentOrg":null,"productSolution":"供应链协同平台","estimatedAmount":null}
+]

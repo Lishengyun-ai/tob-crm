@@ -1,0 +1,6 @@
+[
+  {"id":"act-001","title":"组织方案评审会议","type":"客户会议","actionType":"CUSTOMER_MEETING","status":"待执行","priority":"高","dueDate":"2026-10-16","customerId":"cus-001","projectId":"prj-001","opportunityId":"opp-001","assignee":"李盛云","sourceAgentId":"agent-opportunity","reason":"预算审批人尚未确认，需要让采购负责人进入决策链","result":null},
+  {"id":"act-002","title":"获取智能工厂技术规格书","type":"关系突破","actionType":"RELATIONSHIP_BREAKTHROUGH","status":"进行中","priority":"高","dueDate":"2026-10-18","customerId":"cus-001","projectId":"prj-002","opportunityId":"opp-002","assignee":"王敏","sourceAgentId":"agent-project","reason":"规格书决定产品方案能否进入招标条件","result":null},
+  {"id":"act-003","title":"安排会员增长需求工作坊","type":"业务访谈","actionType":"BUSINESS_WORKSHOP","status":"待执行","priority":"中","dueDate":"2026-10-20","customerId":"cus-002","projectId":"prj-003","opportunityId":"opp-003","assignee":"赵一","sourceAgentId":"agent-customer","reason":"需要验证客户目标和试点边界","result":null},
+  {"id":"act-004","title":"补齐南方能源采购模式","type":"事实核验","actionType":"FACT_VERIFICATION","status":"待执行","priority":"中","dueDate":"2026-10-17","customerId":"cus-003","projectId":"prj-004","opportunityId":null,"assignee":"陈晨","sourceAgentId":"agent-customer","reason":"当前仅有项目线索，尚不足以形成可推进商机","result":null}
+]

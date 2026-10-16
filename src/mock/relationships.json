@@ -1,0 +1,5 @@
+[
+  {"id":"rel-001","sourceType":"Person","sourceId":"per-001","targetType":"Customer","targetId":"cus-001","relationType":"ECONOMIC_BUYER","strength":82,"status":"ESTABLISHED","evidence":"客户访谈确认集团营销副总裁参与预算决策","lastVerifiedAt":"2026-10-13T09:00:00+08:00"},
+  {"id":"rel-002","sourceType":"Person","sourceId":"per-002","targetType":"Opportunity","targetId":"opp-001","relationType":"PROCUREMENT_GATEKEEPER","strength":58,"status":"IN_PROGRESS","evidence":"已建立区域采购联系，预算审批权待确认","lastVerifiedAt":"2026-10-13T09:15:00+08:00"},
+  {"id":"rel-003","sourceType":"ProjectSection","sourceId":"sec-003","targetType":"Opportunity","targetId":"opp-002","relationType":"SCOPES","strength":90,"status":"ESTABLISHED","evidence":"商机来源于工程材料供应标段","lastVerifiedAt":"2026-10-12T10:00:00+08:00"}
+]

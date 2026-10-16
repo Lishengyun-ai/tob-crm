@@ -1,0 +1,6 @@
+[
+  {"id":"per-001","customerId":"cus-001","name":"周明远","title":"集团营销副总裁","role":"经济买家","roleType":"ECONOMIC_BUYER","influence":"高","influenceScore":85,"relationship":"已建立","relationshipStatus":"ESTABLISHED","relationshipStrength":82,"projectIds":["prj-001"]},
+  {"id":"per-002","customerId":"cus-001","name":"陈雪","title":"区域采购负责人","role":"采购把关人","roleType":"PROCUREMENT","influence":"高","influenceScore":80,"relationship":"跟进中","relationshipStatus":"IN_PROGRESS","relationshipStrength":58,"projectIds":["prj-001","prj-002"]},
+  {"id":"per-003","customerId":"cus-002","name":"林可欣","title":"会员业务负责人","role":"业务发起人","roleType":"BUSINESS_INITIATOR","influence":"中","influenceScore":60,"relationship":"已建立","relationshipStatus":"ESTABLISHED","relationshipStrength":76,"projectIds":["prj-003"]},
+  {"id":"per-004","customerId":"cus-003","name":"何志强","title":"工程建设处负责人","role":"项目发起人","roleType":"PROJECT_OWNER","influence":"未知","influenceScore":0,"relationship":"待建立","relationshipStatus":"PENDING","relationshipStrength":0,"projectIds":["prj-004"]}
+]

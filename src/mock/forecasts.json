@@ -1,0 +1,4 @@
+[
+  {"id":"fcst-001","opportunityId":"opp-001","projectId":"prj-001","generatedByAgentId":"agent-opportunity","forecastType":"WIN_PROBABILITY","forecastValue":{"value":72,"unit":"PERCENT"},"confidence":0.84,"factors":["方案评审已安排","预算审批人未确认"],"generatedAt":"2026-10-13T10:00:00+08:00","validUntil":"2026-10-20T23:59:59+08:00"},
+  {"id":"fcst-002","opportunityId":"opp-002","projectId":"prj-002","generatedByAgentId":"agent-project","forecastType":"WIN_PROBABILITY","forecastValue":{"value":48,"unit":"PERCENT"},"confidence":0.71,"factors":["设计院关系待建立","技术规格书未发布"],"generatedAt":"2026-10-12T10:00:00+08:00","validUntil":"2026-10-19T23:59:59+08:00"}
+]

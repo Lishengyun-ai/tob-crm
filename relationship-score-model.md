@@ -1,5 +1,9 @@
 # RelationshipScoreModel 主对象
 
+## 统一 Relationship 接入
+
+关系评分继续写入 `relationship_scores` 历史表，评分对象统一来自 `relationships`。`relationships.role_id` 指向 `roles`，并保留 `source`、`relationship_status`、`last_interaction_at`；旧的三类 Person 关系表只作为兼容写入/读取来源，迁移过程不删除历史数据。这样客户画像的关系覆盖、商机决策人识别和项目突破路径都能使用同一关系实体与评分结果。
+
 ## 设计结论
 
 `RelationshipScoreModel` 只负责评分模型主对象的生命周期管理，暂不承载版本、维度和规则。它与现有 `relationships`、`relationship_scores`、`relationship_score_configs` 表保持独立，因此不会改变已有 Relationship 结构或 Score Engine 的计算行为。

@@ -71,7 +71,6 @@ class CustomerProfileClosedLoopTests(unittest.TestCase):
             ).fetchone()[0],
             1,
         )
-
         result = server.delete_customer_profile_fact(
             self.db,
             self.profile_id,
@@ -85,6 +84,25 @@ class CustomerProfileClosedLoopTests(unittest.TestCase):
                 (updated["id"],),
             ).fetchone()
         )
+
+    def test_profile_projection_and_quality_payload(self):
+        now = "2026-10-12T00:00:00+00:00"
+        self.db.execute(
+            "UPDATE customer_profiles SET confidence_score = 40, expires_at = ?, value_score = 88, growth_potential = 71, customer_level = 'A' WHERE id = ?",
+            ("2026-10-01T00:00:00+00:00", self.profile_id),
+        )
+        server.upsert_customer_profile_fact(
+            self.db, self.profile_id,
+            {"factCode": "construction_area", "value": 120000, "valueType": "number", "confidence": 45}, now,
+        )
+        profile = server.get_customer_profile(self.db, self.profile_id)
+        self.assertEqual(profile["value_score"], 88)
+        self.assertEqual(profile["growth_potential"], 71)
+        self.assertEqual(profile["customer_level"], "A")
+        warning_codes = {item["code"] for item in profile["qualityWarnings"]}
+        self.assertIn("LOW_CONFIDENCE", warning_codes)
+        self.assertIn("EXPIRED", warning_codes)
+        self.assertIn("predictions", profile)
 
     def test_refresh_runs_extraction_scoring_and_summary(self):
         server.upsert_customer_profile_fact(

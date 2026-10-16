@@ -52,6 +52,9 @@ class InsightActionService:
             source_id=f"insight:{insight_id}",
             source_agent_id=payload.get("sourceAgentId"),
             source_agent_run_id=payload.get("sourceAgentRunId"),
+            source_insight_id=insight_id,
+            action_origin="ai_recommended",
+            approval_status=payload.get("approvalStatus", "pending" if payload.get("approvalRequired") else "not_required"),
             created_by=payload.get("createdBy", "AI Insight Agent"),
             dedupe_key=payload.get("dedupeKey", f"insight:{insight_id}:{title}"),
             now=now,
@@ -59,4 +62,6 @@ class InsightActionService:
         if not action:
             raise LookupError("action could not be created")
         relation = self.repository.create(insight_id, action["id"], priority, reason, now)
+        if self.repository.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='insight_action_audits'").fetchone():
+            self.repository.db.execute("INSERT INTO insight_action_audits (insight_id, action_id, event_type, to_status, actor, metadata_json, created_at) VALUES (?, ?, 'accepted', ?, ?, ?, ?)", (insight_id, action["id"], action.get("status", "pending"), payload.get("createdBy", "sales"), "{}", now))
         return relation, action
