@@ -102,7 +102,25 @@ def decide_approval(db, actor, request_id, approved, reason=""):
     a = _actor(actor)
     if row["requested_by"] == a["userId"]: raise PermissionError("申请人不能审批自己的请求")
     status = "APPROVED" if approved else "REJECTED"; t = now_iso()
-    db.execute("UPDATE approval_requests SET status=?, approved_by=?, approved_at=?, updated_at=? WHERE id=?", (status, a["userId"], t, t, request_id))
+    target_id = row["target_id"]
+    if approved and row["request_type"] == "opportunity_create":
+        payload = json.loads(row["payload_json"] or "{}")
+        required = ["name", "customer", "stage"]
+        if any(not str(payload.get(key, "")).strip() for key in required):
+            raise ValueError("审批单缺少商机必填字段")
+        cur = db.execute("""INSERT INTO opportunities
+            (name, customer, stage, amount, business_type, owner, description, risk, next_action, source_category, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
+                payload["name"], payload["customer"], payload["stage"], int(payload.get("amount", 0) or 0),
+                payload.get("businessType", "CRM通用"), payload.get("owner", row["requested_by"]),
+                payload.get("description", "刚刚创建，等待补充商机背景与业务需求。"),
+                payload.get("risk", "待完善业务信息"), payload.get("nextAction", "补充商机语义字段"),
+                payload.get("sourceCategory", "内部信息"), t, t))
+        target_id = cur.lastrowid
+        for tag in payload.get("tags", ["新建对象"]):
+            db.execute("INSERT INTO semantic_fields (opportunity_id, field_name, field_type, field_value) VALUES (?, ?, ?, ?)", (target_id, "业务标签", "semantic_tag", tag))
+        db.execute("INSERT INTO business_events (opportunity_id, event_type, message, created_at) VALUES (?, ?, ?, ?)", (target_id, "created", "商机审批通过，商机对象已创建", t))
+    db.execute("UPDATE approval_requests SET status=?, target_id=?, approved_by=?, approved_at=?, updated_at=? WHERE id=?", (status, target_id, a["userId"], t, t, request_id))
     record_audit(db, actor, "approval", status.lower(), row["target_type"], row["target_id"], metadata={"approvalRequestId": request_id, "reason": reason})
     return dict(db.execute("SELECT * FROM approval_requests WHERE id = ?", (request_id,)).fetchone())
 
