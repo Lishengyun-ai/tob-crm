@@ -97,6 +97,7 @@ def create_approval_request(db, actor, request_type, target_type, target_id, pay
 def decide_approval(db, actor, request_id, approved, reason=""):
     row = db.execute("SELECT * FROM approval_requests WHERE id = ?", (request_id,)).fetchone()
     if not row: raise LookupError("approval request not found")
+    if row["status"] != "PENDING": raise ValueError("审批单已处理，不能重复操作")
     decision = authorize_operation(db, actor, "approval", row["target_type"], row["target_id"])
     if not decision.allowed: raise PermissionError(decision.reason)
     a = _actor(actor)

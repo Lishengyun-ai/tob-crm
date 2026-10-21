@@ -62,6 +62,34 @@ class CustomerDevelopmentAt123Test(unittest.TestCase):
         finally:
             db.close()
 
+    def test_at2_save_auto_advances_when_any_mapped_field_has_value(self):
+        db = server.connect()
+        try:
+            development = db.execute(
+                "SELECT id FROM customer_developments WHERE current_stage_code = 'AT2' ORDER BY id LIMIT 1"
+            ).fetchone()
+            self.assertIsNotNone(development)
+            development_id = development["id"]
+            db.execute(
+                """INSERT INTO customer_development_stage_fields
+                   (customer_development_id, stage_code, field_code, value_json, created_at, updated_at)
+                   VALUES (?, 'AT2', 'substrate', ?, 'now', 'now')""",
+                (development_id, server.json.dumps("混凝土", ensure_ascii=False)),
+            )
+            transition = server.auto_advance_customer_development_after_at2_save(db, development_id)
+            self.assertTrue(transition["advanced"])
+            self.assertEqual(transition["detail"]["current_stage_code"], "AT3")
+            records = db.execute(
+                "SELECT stage_code, status FROM customer_development_stage_records WHERE customer_development_id = ? ORDER BY id",
+                (development_id,),
+            ).fetchall()
+            self.assertEqual(records[-2]["stage_code"], "AT2")
+            self.assertEqual(records[-2]["status"], "completed")
+            self.assertEqual(records[-1]["stage_code"], "AT3")
+            self.assertEqual(records[-1]["status"], "in_progress")
+        finally:
+            db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

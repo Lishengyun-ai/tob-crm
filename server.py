@@ -2910,11 +2910,53 @@ CUSTOMER_DEVELOPMENT_FIELD_CODES = {
     },
 }
 
+# AT2 的自动完成条件映射到现有“客户需求与产品信息”表单，不新增隐藏字段。
+# 按业务确认：该区域任意一个字段有值，即同时满足 businessNeed 和
+# relationshipCoverage；bidPlan / priceStrategy 属于进入 AT3 后才填写的字段。
+CUSTOMER_DEVELOPMENT_AT2_COMPLETION_FIELD_GROUPS = {
+    "businessNeed": (
+        "substrate", "building_environment", "customer_expected_purchase_volume", "expected_coating_area",
+        "m01", "m04", "execution_standard", "customer_cooperation_brands",
+    ),
+    "relationshipCoverage": (
+        "substrate", "building_environment", "customer_expected_purchase_volume", "expected_coating_area",
+        "m01", "m04", "execution_standard", "customer_cooperation_brands",
+    ),
+}
+
 CUSTOMER_DEVELOPMENT_METRIC_CODES = (
     "customer_purchase_total", "target_sales_total", "estimated_sales_volume",
     "nippon_signed_total", "nippon_signed_amount", "estimated_total_market_share",
     "total_market_share", "bid_total_amount",
 )
+
+def _stage_field_value_present(value):
+    if value is None:
+        return False
+    if isinstance(value, (dict, list)):
+        return bool(value)
+    return bool(str(value).strip())
+
+def customer_development_at2_completion(db, development_id):
+    rows = db.execute(
+        "SELECT field_code, value_json FROM customer_development_stage_fields WHERE customer_development_id=? AND stage_code='AT2'",
+        (development_id,),
+    ).fetchall()
+    values = {}
+    for row in rows:
+        try:
+            values[row["field_code"]] = json.loads(row["value_json"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            values[row["field_code"]] = row["value_json"]
+    missing = []
+    matched = {}
+    for requirement, field_codes in CUSTOMER_DEVELOPMENT_AT2_COMPLETION_FIELD_GROUPS.items():
+        field_code = next((code for code in field_codes if _stage_field_value_present(values.get(code))), None)
+        if field_code:
+            matched[requirement] = field_code
+        else:
+            missing.append(requirement)
+    return {"complete": not missing, "missing": missing, "matched": matched}
 
 def _development_exists(db, development_id):
     return db.execute("SELECT id, customer_id FROM customer_developments WHERE id = ?", (development_id,)).fetchone()
@@ -3000,6 +3042,74 @@ def get_customer_development_data(db, development_id, now=None):
     metrics = calculate_customer_development_metrics(db, development_id, now=now)
     return {"fields": fields, "people": people, "attachments": attachments, "metrics": metrics}
 
+def auto_advance_customer_development_after_approval(db, development_id, approval_id, actor):
+    development = db.execute("SELECT * FROM customer_developments WHERE id = ?", (development_id,)).fetchone()
+    if not development: raise LookupError("customer development not found")
+    current = customer_development_stage(development["current_stage_code"])
+    target = customer_development_stage("AT2")
+    if not current or current["code"] != "AT1": raise ValueError("客户开发当前阶段不是 AT1，不能自动进入 AT2")
+    approval = db.execute("SELECT * FROM approval_requests WHERE id=? AND target_type='CustomerDevelopment' AND target_id=? AND status='APPROVED'", (approval_id, development_id)).fetchone()
+    if not approval: raise ValueError("KA主管审批记录不存在或尚未通过")
+    current_record = db.execute("SELECT id FROM customer_development_stage_records WHERE customer_development_id=? AND stage_code='AT1' AND status='in_progress'", (development_id,)).fetchone()
+    if not current_record: raise ValueError("AT1 阶段记录缺失或状态不一致")
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute("UPDATE customer_development_stage_records SET status='completed', required_json=?, completed_at=?, updated_at=? WHERE customer_development_id=? AND stage_code='AT1'", (json.dumps({"approvalRequestId": approval_id}, ensure_ascii=False), now, now, development_id))
+    db.execute("INSERT INTO customer_development_stage_records (customer_development_id, stage_code, stage_name, status, required_json, started_at, created_at, updated_at) VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?)", (development_id, target["code"], target["name"], "{}", now, now, now))
+    db.execute("UPDATE customer_developments SET current_stage_code='AT2', current_stage_name=?, next_action=?, updated_at=? WHERE id=?", (target["name"], "完成 AT2 需求与关系引导", now, development_id))
+    updated = db.execute("SELECT * FROM customer_developments WHERE id=?", (development_id,)).fetchone()
+    create_action_record(db, title="推进客户开发：完成 AT2 阶段关键动作", description="KA主管已批准客户开发进入 AT2，请补充需求与关系引导信息。", action_type="customer_development_stage", priority="high", assignee=updated["owner"], customer_id=updated["customer_id"], customer_organization_id=updated["customer_organization_id"], customer_development_id=development_id, stage_code="AT2", stage_name=target["name"], source_type="customer_development_stage", source_id=str(development_id), created_by=str(actor if isinstance(actor, str) else actor.get("userId", "system")), dedupe_key=f"customer-development-stage:{development_id}:AT2", now=now)
+    return get_customer_development(db, development_id)
+
+def auto_advance_customer_development_after_at2_save(db, development_id, actor="李盛云"):
+    development = db.execute("SELECT * FROM customer_developments WHERE id = ?", (development_id,)).fetchone()
+    if not development:
+        raise LookupError("customer development not found")
+    if development["current_stage_code"] != "AT2":
+        return {"detail": get_customer_development(db, development_id), "completion": {"complete": False, "missing": []}, "advanced": False}
+    completion = customer_development_at2_completion(db, development_id)
+    if not completion["complete"]:
+        return {"detail": get_customer_development(db, development_id), "completion": completion, "advanced": False}
+    current_record = db.execute(
+        "SELECT id FROM customer_development_stage_records WHERE customer_development_id=? AND stage_code='AT2' AND status='in_progress'",
+        (development_id,),
+    ).fetchone()
+    if not current_record:
+        raise ValueError("AT2 阶段记录缺失或状态不一致")
+    target = customer_development_stage("AT3")
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "UPDATE customer_development_stage_records SET status='completed', required_json=?, completed_at=?, updated_at=? WHERE customer_development_id=? AND stage_code='AT2'",
+        (json.dumps({"businessNeed": completion["matched"].get("businessNeed"), "relationshipCoverage": completion["matched"].get("relationshipCoverage")}, ensure_ascii=False), now, now, development_id),
+    )
+    db.execute(
+        "INSERT INTO customer_development_stage_records (customer_development_id, stage_code, stage_name, status, required_json, started_at, created_at, updated_at) VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?)",
+        (development_id, target["code"], target["name"], "{}", now, now, now),
+    )
+    db.execute(
+        "UPDATE customer_developments SET current_stage_code='AT3', current_stage_name=?, next_action=?, updated_at=? WHERE id=?",
+        (target["name"], "完成 AT3 招投标", now, development_id),
+    )
+    updated = db.execute("SELECT * FROM customer_developments WHERE id=?", (development_id,)).fetchone()
+    create_action_record(
+        db,
+        title="推进客户开发：完成 AT3 招投标阶段关键动作",
+        description="AT2 客户需求与产品信息已保存，客户开发自动进入 AT3，请补充招投标计划和竞争与价格策略。",
+        action_type="customer_development_stage",
+        priority="high",
+        assignee=updated["owner"],
+        customer_id=updated["customer_id"],
+        customer_organization_id=updated["customer_organization_id"],
+        customer_development_id=development_id,
+        stage_code="AT3",
+        stage_name=target["name"],
+        source_type="customer_development_stage",
+        source_id=str(development_id),
+        created_by=str(actor if isinstance(actor, str) else actor.get("userId", "system")),
+        dedupe_key=f"customer-development-stage:{development_id}:AT3",
+        now=now,
+    )
+    return {"detail": get_customer_development(db, development_id), "completion": completion, "advanced": True}
+
 def get_customer_development(db, development_id):
     row = db.execute(
         """SELECT cd.*, c.name AS customer_name, c.customer_serial_no,
@@ -3020,6 +3130,8 @@ def get_customer_development(db, development_id):
         "sequence": customer_development_stage(item["current_stage_code"])["sequence"]
         if customer_development_stage(item["current_stage_code"]) else None,
     }
+    approval = db.execute("SELECT * FROM approval_requests WHERE target_type='CustomerDevelopment' AND target_id=? ORDER BY id DESC LIMIT 1", (development_id,)).fetchone()
+    item["stageApproval"] = dict(approval) if approval else None
     item["stageRecords"] = []
     for record in db.execute(
         """SELECT * FROM customer_development_stage_records
@@ -9802,9 +9914,22 @@ class Handler(BaseHTTPRequestHandler):
                 if len(parts) == 5 and parts[4] in ("approve", "reject"):
                     try: rid = int(parts[3])
                     except ValueError: return self.send_json({"error": "invalid approval id"}, 400)
-                    try: return self.send_json(decide_approval(db, data.get("actor", {"userId": "李盛云", "roles": ["approver"], "canApprove": True}), rid, parts[4] == "approve", data.get("reason", "")))
+                    try:
+                        approver = data.get("actor", {"userId": "李盛云", "roles": ["approver"], "canApprove": True})
+                        approval_target = db.execute("SELECT target_type FROM approval_requests WHERE id=?", (rid,)).fetchone()
+                        if approval_target and approval_target["target_type"] == "CustomerDevelopment":
+                            roles = approver.get("roles", []) if isinstance(approver, dict) else []
+                            if not ({"KA主管", "ka_supervisor", "admin"} & set(roles)):
+                                return self.send_json({"error": "只有 KA主管 才能审批客户开发 AT1→AT2", "code": "ka_supervisor_required"}, 403)
+                        result = decide_approval(db, approver, rid, parts[4] == "approve", data.get("reason", ""))
+                        if parts[4] == "approve" and result.get("target_type") == "CustomerDevelopment" and result.get("request_type") == "customer_development_stage":
+                            return self.send_json(auto_advance_customer_development_after_approval(db, int(result["target_id"]), rid, approver))
+                        return self.send_json(result)
                     except PermissionError as exc: return self.send_json({"error": str(exc)}, 403)
                     except LookupError as exc: return self.send_json({"error": str(exc)}, 404)
+                    except (ValueError, sqlite3.IntegrityError) as exc:
+                        db.rollback()
+                        return self.send_json({"error": str(exc), "code": "approval_transition_failed"}, 409)
             if path.startswith("/api/media/runs/") and path.endswith("/retry"):
                 try:
                     previous_id = int(path.strip("/").split("/")[3])
@@ -10916,6 +11041,14 @@ class Handler(BaseHTTPRequestHandler):
                             (development_id, stage_code, field_code, json.dumps(row.get("value"), ensure_ascii=False), str(row.get("sourceType", "manual")), str(row.get("sourceRef", "")), now, now),
                         )
                     db.execute("UPDATE customer_developments SET updated_at = ? WHERE id = ?", (now, development_id))
+                    if any(str(row.get("stageCode", "")).strip() == "AT2" for row in rows):
+                        transition = auto_advance_customer_development_after_at2_save(db, development_id, data.get("actor", "李盛云"))
+                        response = transition["detail"]
+                        response["stageTransition"] = {
+                            "autoAdvanced": transition["advanced"],
+                            "missing": transition["completion"].get("missing", []),
+                        }
+                        return self.send_json(response)
                     return self.send_json(get_customer_development(db, development_id))
                 if len(parts) == 4 and parts[3] == "metrics":
                     return self.send_json({"metrics": calculate_customer_development_metrics(db, development_id, now=now)})
@@ -11104,6 +11237,21 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                 )
                 return self.send_json(get_customer_development(db, development_id), 201)
+            if path.startswith("/api/customer-developments/") and path.endswith("/stage-approval"):
+                parts = path.strip("/").split("/")
+                try: development_id = int(parts[2])
+                except (IndexError, ValueError): return self.send_json({"error": "invalid customer development id"}, 400)
+                development = db.execute("SELECT * FROM customer_developments WHERE id=?", (development_id,)).fetchone()
+                if not development: return self.send_json({"error": "customer development not found"}, 404)
+                actor = data.get("actor", self.headers.get("X-Actor", "李盛云"))
+                decision = authorize_operation(db, actor, "formal_write", "Customer", development["customer_id"], data)
+                if not decision.allowed: return self.send_json({"error": decision.reason, "code": "forbidden"}, 403)
+                if development["current_stage_code"] != "AT1": return self.send_json({"error": "当前阶段不是 AT1，不能提交 AT2 审批", "code": "invalid_current_stage"}, 409)
+                pending = db.execute("SELECT id FROM approval_requests WHERE target_type='CustomerDevelopment' AND target_id=? AND request_type='customer_development_stage' AND status='PENDING'", (development_id,)).fetchone()
+                if pending: return self.send_json({"error": "已有待处理的 KA主管审批", "code": "approval_pending", "approvalRequestId": pending["id"]}, 409)
+                payload = {"developmentId": development_id, "stageCode": "AT2", "customerName": development["name"], "supervisorRole": "KA主管", "at1Data": get_customer_development_data(db, development_id)}
+                approval_id = create_approval_request(db, actor, "customer_development_stage", "CustomerDevelopment", development_id, payload, "AT1→AT2 必须由 KA主管审批")
+                return self.send_json({"approvalRequestId": approval_id, "status": "PENDING"}, 201)
             if path.startswith("/api/customer-developments/") and path.endswith("/stage"):
                 parts = path.strip("/").split("/")
                 try:
@@ -11115,12 +11263,37 @@ class Handler(BaseHTTPRequestHandler):
                 ).fetchone()
                 if not development:
                     return self.send_json({"error": "customer development not found"}, 404)
+                actor = data.get("actor", self.headers.get("X-Actor", "李盛云"))
+                decision = authorize_operation(db, actor, "formal_write", "Customer", development["customer_id"], data)
+                if not decision.allowed:
+                    return self.send_json({"error": decision.reason, "code": "forbidden"}, 403)
                 target = customer_development_stage(data.get("stageCode"))
                 if not target:
                     return self.send_json({"error": "invalid customer development stage"}, 400)
                 current = customer_development_stage(development["current_stage_code"])
-                if current and target["sequence"] != current["sequence"] + 1:
+                if not current:
+                    return self.send_json({"error": "current customer development stage is invalid", "code": "invalid_current_stage"}, 409)
+                if target["sequence"] != current["sequence"] + 1:
                     return self.send_json({"error": "customer development stages must advance sequentially"}, 409)
+                if current["code"] == "AT1" and target["code"] == "AT2":
+                    approval = db.execute("SELECT id FROM approval_requests WHERE target_type='CustomerDevelopment' AND target_id=? AND request_type='customer_development_stage' AND status='APPROVED' ORDER BY id DESC LIMIT 1", (development_id,)).fetchone()
+                    if not approval: return self.send_json({"error": "AT1→AT2 必须先获得 KA主管审批", "code": "approval_required"}, 409)
+                    try: return self.send_json(auto_advance_customer_development_after_approval(db, development_id, approval["id"], actor))
+                    except (LookupError, ValueError) as exc: return self.send_json({"error": str(exc), "code": "stage_transition_rejected"}, 409)
+                if current["code"] == "AT2" and target["code"] == "AT3":
+                    try:
+                        transition = auto_advance_customer_development_after_at2_save(db, development_id, actor)
+                    except (LookupError, ValueError) as exc:
+                        return self.send_json({"error": str(exc), "code": "stage_transition_rejected"}, 409)
+                    if not transition["advanced"]:
+                        return self.send_json({"error": "AT2 客户需求与产品信息尚未完成", "missing": transition["completion"].get("missing", []), "code": "at2_completion_required"}, 409)
+                    return self.send_json(transition["detail"])
+                current_record = db.execute(
+                    "SELECT id FROM customer_development_stage_records WHERE customer_development_id = ? AND stage_code = ? AND status = 'in_progress'",
+                    (development_id, current["code"]),
+                ).fetchone()
+                if not current_record:
+                    return self.send_json({"error": "current stage record is missing or not in progress", "code": "stage_record_inconsistent"}, 409)
                 required = data.get("required") or {}
                 missing = [key for key in target["required"] if not str(required.get(key, "")).strip()]
                 if missing:
@@ -12119,6 +12292,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store, max-age=0")
         self.end_headers()
         self.wfile.write(body)
 
