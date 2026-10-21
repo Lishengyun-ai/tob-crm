@@ -10,6 +10,23 @@ python server.py
 
 打开 <http://127.0.0.1:8877/>
 
+## Windows 后台服务
+
+如果需要让多位同事访问，建议把后台注册为 Windows Service，使它在未登录时也能启动，并在机器重启后自动恢复。安装和卸载脚本不引入新的第三方依赖，使用当前 Python 环境中的 `pywin32`：
+
+```powershell
+# 以管理员身份运行 PowerShell
+.\install-crm-service.ps1
+```
+
+服务名为 `AICrm8877`，默认监听 `0.0.0.0:8877`。停止或移除服务：
+
+```powershell
+.\uninstall-crm-service.ps1
+```
+
+安装脚本会创建仅允许 Domain/Private 本地网段访问 8877 的防火墙规则。同事应通过 `http://<CRM主机名或内网IP>:8877/` 访问。正式开放前仍需要配置真实的用户登录和权限控制；当前项目的 `actor` 字段不能替代身份认证。
+
 ## 目录说明
 
 - `outputs/index.html`：CRM 原型界面

@@ -82,7 +82,7 @@
       <button class="nav-sub" id="semanticIndexNav">语义检索索引</button><button class="nav-sub" id="semanticStatsNav">调用统计</button><button class="nav-sub">信任层与审计</button>
     </aside>
     <main class="main">
-      <header class="topbar"><div class="crumb">业务工作台 <strong>商机</strong></div><div class="top-actions"><span>⌕</span><span>♧</span><span>◌</span><a class="ai-crm-link" href="http://127.0.0.1:8877/native" aria-label="返回 AI CRM">AI CRM</a><span class="avatar">李</span></div></header>
+      <header class="topbar"><div class="crumb">业务工作台 <strong>商机</strong></div><div class="top-actions"><span>⌕</span><span>♧</span><span>◌</span><a class="ai-crm-link" href="/native" aria-label="返回 AI CRM">AI CRM</a><span class="avatar">李</span></div></header>
       <div class="content">
         <div class="page-head"><div><h1>商机</h1><p>以语义对象为中心管理销售机会，连接客户、项目与决策行动。</p></div><div style="display:flex;gap:8px"><button class="secondary" id="discoveryBtn">⌁ 现场发现</button><button class="secondary" id="progressOpp">推进阶段</button><button class="primary" id="newOpp">＋ 新建商机</button></div></div>
         <section class="metrics"><div class="metric"><div class="metric-label">开放商机</div><div class="metric-value">24</div><div class="metric-foot">↑ 12% 较上月</div></div><div class="metric"><div class="metric-label">预测金额</div><div class="metric-value">¥ 8,420,000</div><div class="metric-foot">基于语义规则计算</div></div><div class="metric"><div class="metric-label">本月赢单</div><div class="metric-value">6</div><div class="metric-foot">↑ 2 个较上月</div></div><div class="metric"><div class="metric-label">风险商机</div><div class="metric-value">3</div><div class="metric-foot" style="color:#dd7a21">需要关注</div></div></section>
@@ -115,7 +115,8 @@
   <script>
     // 本地直接打开静态页面时，API 仍由 server.py 提供，默认端口与 README/render.yaml 保持一致。
     // 通过 window.CRM_API_BASE 可覆盖该地址；同源部署继续使用相对 /api 路径。
-    const API_BASE=window.CRM_API_BASE||(location.protocol==='file:'?'http://127.0.0.1:8877':'');
+    // API 与页面保持同源，避免部署到 Render 后跳回访问者自己的 localhost。
+    const API_BASE=window.CRM_API_BASE||'';
     const nativeFetch=window.fetch.bind(window);window.fetch=(url,options)=>nativeFetch(typeof url==='string'&&url.startsWith('/api/')?API_BASE+url:url,options);
     let opps=[], current=null, activeStage='全部', opportunityStages=[], pendingOpportunityStage=null;
     const money=(n)=>`¥ ${Number(n||0).toLocaleString('zh-CN')}`;
